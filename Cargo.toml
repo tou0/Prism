@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# Real floor: a resolved dependency (clap_lex) requires edition2024, stabilized
+# in Rust 1.85. Verified in CI by the `msrv` job below.
+rust-version = "1.85"
+publish = false
+license = "AGPL-3.0-or-later"
+authors = ["The Prism contributors"]
+repository = "https://github.com/tou0/Prism"
+
+# Enforced across every crate: the codebase is zero-unsafe (no exceptions).
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+# No unwrap()/expect() on production paths (core security rule). These are
+# re-allowed in tests via clippy.toml (allow-unwrap-in-tests / -expect-in-tests).
+# Binaries avoid the #[tokio::main] generated .expect() by building the runtime
+# by hand and using `?` (see each main.rs).
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+# Async runtime. Default features off; each crate opts into what it needs.
+tokio = { version = "1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+# Zero-unsafe access to getuid() for the SO_PEERCRED check.
+rustix = { version = "1", features = ["process"] }
+tempfile = "3"
+
+# Internal crates.
+prism-core = { path = "crates/prism-core" }
+prism-proto = { path = "crates/prism-proto" }
+prism-net = { path = "crates/prism-net" }

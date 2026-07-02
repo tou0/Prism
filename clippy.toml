@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# unwrap()/expect() are denied on production paths (see [workspace.lints.clippy]
+# in Cargo.toml). They remain allowed inside tests, where a failed assertion is
+# the intended outcome.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
