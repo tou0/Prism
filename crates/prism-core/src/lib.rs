@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `prism-core` — shared core for Prism.
 //!
-//! This crate will hold identity, cryptography, and the encrypted keystore
-//! (milestone M1 onward, see `docs/specification.md`). It has no network or UI
-//! dependencies. For milestone M0 it provides only shared constants and the
-//! resolution of the default IPC socket path.
+//! Identity, cryptography, and the encrypted keystore (see
+//! `docs/specification.md` §4–5 and `docs/keystore.md`). No network or UI
+//! dependencies. Also provides shared constants and the resolution of default
+//! paths (IPC socket, keystore file).
+
+pub mod identity;
+pub mod secret;
+
+pub use identity::{
+    validate_nick, Fingerprint, IdentityKeypair, NickError, PublicIdentity, NICK_MAX_CHARS,
+    SHORT_FINGERPRINT_LEN,
+};
+pub use secret::{Passphrase, RngError, Seed32};
 
 use std::path::PathBuf;
 

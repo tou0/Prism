@@ -40,6 +40,25 @@ tracing-subscriber = "0.3"
 rustix = { version = "1", features = ["process"] }
 tempfile = "3"
 
+# M1 — identity & keystore crypto (docs/specification.md §4-5, docs/keystore.md).
+# Audited RustCrypto / dalek primitives only; never hand-rolled crypto.
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+blake3 = "1"
+bs58 = "0.5"
+bip39 = { version = "2", features = ["zeroize"] }
+# OS CSPRNG for ALL random material (keys, salts, nonces, mnemonic entropy).
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
+hkdf = "0.12"
+sha2 = "0.10"
+zeroize = "1"
+secrecy = "0.10"
+# No-echo passphrase input in the CLI.
+rpassword = "7"
+# Dev-only: decoding known-answer test vectors.
+hex = "0.4"
+
 # Internal crates.
 prism-core = { path = "crates/prism-core" }
 prism-proto = { path = "crates/prism-proto" }
