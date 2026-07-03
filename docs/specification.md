@@ -90,7 +90,7 @@ A messenger where **privacy is structural, not an option**. No central server, n
 
 ### 4.2 Local access
 - **No email, no server password.** A **passphrase** decrypts the local keystore. It never leaves the device and authenticates no one remotely.
-- **Recovery**: by default **none** (the secret exists only in the user's head — nothing to reveal under coercion). A **recovery phrase** (12–24 words, BIP-39 style) is offered as an **explicit opt-in** for profiles favoring convenience.
+- **Recovery**: by default **none** (the secret exists only in the user's head — nothing to reveal under coercion). A **recovery phrase** (12–24 words, BIP-39 style) is offered as an **explicit opt-in** for profiles favoring convenience. The choice is made at `init`, and the **on-disk keystore is indistinguishable between the two modes** — seizing the device must not reveal whether a recovery phrase exists.
 
 ---
 
@@ -323,7 +323,7 @@ Adversaries to consider explicitly (in/out of scope per version):
 3. **Wire format**: ✅ **protobuf** (`prost`).
 4. **Offline relays**: ✅ 2–3 relays, reliability score + designated mailbox, configurable TTL (short default, 1-month ceiling), deletion on delivery, Hashcash.
 5. **Proof-of-work calibration**: ✅ context-based scale + recipient-verified adaptivity + memory-hard PoW; concrete difficulty levels still to set.
-6. **Argon2id parameters** (memory/iterations) per hardware target.
+6. **Argon2id parameters**: ✅ **fixed constants**, documented, calibrated ~0.5–1 s on a modest machine (not user-configurable). Keystore = a single encrypted file; its on-disk format MUST be **indistinguishable between recovery modes** (no field reveals whether a BIP-39 recovery phrase exists — otherwise device seizure would betray that a phrase is extractable, defeating the at-risk case).
 7. **Daemon↔client IPC protocol details.**
 8. **Test strategy**: to be completed later.
 9. **Maintainer keys**: ✅ 2-signature threshold, scheduled + on-suspicion rotation, revocation by signed notice, manifest at startup.
