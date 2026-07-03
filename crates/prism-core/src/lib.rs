@@ -7,6 +7,7 @@
 //! paths (IPC socket, keystore file).
 
 pub mod identity;
+pub mod recovery;
 pub mod secret;
 
 pub use identity::{
