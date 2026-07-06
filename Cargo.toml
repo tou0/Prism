@@ -63,3 +63,11 @@ hex = "0.4"
 prism-core = { path = "crates/prism-core" }
 prism-proto = { path = "crates/prism-proto" }
 prism-net = { path = "crates/prism-net" }
+
+# Argon2id is memory-hard by design (~0.5-1 s optimized) and roughly an order
+# of magnitude slower unoptimized, which would make every keystore test crawl.
+# Optimize the KDF hot path even in dev/test profiles.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

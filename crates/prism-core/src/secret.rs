@@ -87,9 +87,18 @@ impl Seed32 {
     /// Wrap raw seed bytes, taking ownership.
     ///
     /// The caller must not retain another copy of `bytes`; prefer moving a
-    /// value whose source container is itself zeroized on drop.
+    /// value whose source container is itself zeroized on drop, or use
+    /// [`Seed32::from_buffer`] to hand over an already-zeroizing buffer
+    /// without an intermediate stack copy.
     pub fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
         Self(Zeroizing::new(bytes))
+    }
+
+    /// Wrap an already-zeroizing buffer, without any intermediate copy.
+    /// Preferred over [`Seed32::from_bytes`] when the bytes were produced
+    /// inside a `Zeroizing` container (KDF output, decrypted payload, ...).
+    pub(crate) fn from_buffer(buf: Zeroizing<[u8; Self::LEN]>) -> Self {
+        Self(buf)
     }
 
     /// Expose the seed bytes. Keep the borrow as short as possible and never

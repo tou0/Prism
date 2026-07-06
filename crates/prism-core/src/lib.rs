@@ -7,6 +7,7 @@
 //! paths (IPC socket, keystore file).
 
 pub mod identity;
+pub mod keystore;
 pub mod recovery;
 pub mod secret;
 
@@ -26,6 +27,9 @@ pub const APP_NAME: &str = "prism";
 /// File name of the daemon's IPC socket inside the runtime directory.
 pub const DEFAULT_SOCKET_FILE: &str = "prismd.sock";
 
+/// File name of the encrypted keystore inside the data directory.
+pub const DEFAULT_KEYSTORE_FILE: &str = "keystore.pks";
+
 // Components used to derive per-platform directories.
 const QUALIFIER: &str = "";
 const ORGANIZATION: &str = "prism";
@@ -38,6 +42,10 @@ pub enum CoreError {
     /// is unset). Callers should fall back to an explicit `--socket` path.
     #[error("could not determine a per-user runtime directory for the IPC socket")]
     NoRuntimeDir,
+    /// No per-user data directory could be determined. Callers should fall
+    /// back to an explicit `--keystore` path.
+    #[error("could not determine a per-user data directory for the keystore")]
+    NoDataDir,
 }
 
 /// Resolve the default IPC socket path inside the per-user runtime directory.
@@ -51,4 +59,15 @@ pub fn default_socket_path() -> Result<PathBuf, CoreError> {
         ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION).ok_or(CoreError::NoRuntimeDir)?;
     let runtime_dir = dirs.runtime_dir().ok_or(CoreError::NoRuntimeDir)?;
     Ok(runtime_dir.join(DEFAULT_SOCKET_FILE))
+}
+
+/// Resolve the default keystore path inside the per-user data directory.
+///
+/// On Linux this is `~/.local/share/prism/keystore.pks`. The keystore module
+/// forces the directory to `0700` and the file to `0600` when writing (see
+/// [`keystore::seal_to_path`]).
+pub fn default_keystore_path() -> Result<PathBuf, CoreError> {
+    let dirs =
+        ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION).ok_or(CoreError::NoDataDir)?;
+    Ok(dirs.data_dir().join(DEFAULT_KEYSTORE_FILE))
 }

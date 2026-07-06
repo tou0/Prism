@@ -7,8 +7,8 @@
 //!   frozen as a golden vector so an accidental change to any derivation step
 //!   can never slip through silently.
 //!
-//! Argon2id (RFC 9106) and ChaCha20-Poly1305 (RFC 8439) vectors live in this
-//! file too, alongside the keystore they protect.
+//! - Argon2id: the RFC 9106 §5.3 reference vector;
+//! - ChaCha20-Poly1305: the RFC 8439 §2.8.2 AEAD vector.
 
 use prism_core::recovery::RecoveryPhrase;
 use prism_core::IdentityKeypair;
@@ -95,4 +95,92 @@ fn prism_recovery_chain_golden_vector() {
         "99b2b7f0c8381efaffc4ba72505258994bd8c42290d776d01a3e1b2e396867f6"
     );
     assert_eq!(public.handle("alice"), "alice#FG6AGuHx7Sm1pb");
+}
+
+/// Argon2id reference vector from RFC 9106 §5.3 (t=3, m=32 KiB, p=4, with
+/// secret and associated data). Exercises the exact `argon2` crate APIs the
+/// keystore relies on, pinned against the RFC output.
+#[test]
+fn argon2id_rfc9106_reference_vector() {
+    use argon2::{Algorithm, Argon2, AssociatedData, ParamsBuilder, Version};
+
+    let params = ParamsBuilder::new()
+        .m_cost(32)
+        .t_cost(3)
+        .p_cost(4)
+        .data(AssociatedData::new(&[0x04; 12]).unwrap())
+        .build()
+        .unwrap();
+    let argon2 =
+        Argon2::new_with_secret(&[0x03; 8], Algorithm::Argon2id, Version::V0x13, params).unwrap();
+
+    let mut out = [0u8; 32];
+    argon2
+        .hash_password_into(&[0x01; 32], &[0x02; 16], &mut out)
+        .unwrap();
+
+    assert_eq!(
+        hex::encode(out),
+        "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"
+    );
+}
+
+/// ChaCha20-Poly1305 AEAD vector from RFC 8439 §2.8.2, driven through the
+/// same encrypt/decrypt calls the keystore uses (payload + associated data),
+/// including tag rejection on tamper.
+#[test]
+fn chacha20poly1305_rfc8439_reference_vector() {
+    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+
+    let key =
+        hex::decode("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f").unwrap();
+    let nonce = hex::decode("070000004041424344454647").unwrap();
+    let aad = hex::decode("50515253c0c1c2c3c4c5c6c7").unwrap();
+    let plaintext: &[u8] = b"Ladies and Gentlemen of the class of '99: \
+        If I could offer you only one tip for the future, sunscreen would be it.";
+    let expected_ciphertext = "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5\
+        a736ee62d63dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b3692ddbd7f2d778b8c98\
+        03aee328091b58fab324e4fad675945585808b4831d7bc3ff4def08e4b7a9de576d26586cec64b6116";
+    let expected_tag = "1ae10b594f09e26a7e902ecbd0600691";
+
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
+    let sealed = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
+        .unwrap();
+
+    let (ciphertext, tag) = sealed.split_at(sealed.len() - 16);
+    assert_eq!(hex::encode(ciphertext), expected_ciphertext);
+    assert_eq!(hex::encode(tag), expected_tag);
+
+    // Decrypt round-trips...
+    let opened = cipher
+        .decrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: &sealed,
+                aad: &aad,
+            },
+        )
+        .unwrap();
+    assert_eq!(opened, plaintext);
+
+    // ...and a single flipped bit fails the tag.
+    let mut tampered = sealed.clone();
+    tampered[0] ^= 0x01;
+    assert!(cipher
+        .decrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: &tampered,
+                aad: &aad,
+            },
+        )
+        .is_err());
 }

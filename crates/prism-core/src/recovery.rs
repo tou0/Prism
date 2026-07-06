@@ -137,7 +137,7 @@ impl RecoveryPhrase {
         let mut okm = Zeroizing::new([0u8; Seed32::LEN]);
         hkdf.expand(IDENTITY_KDF_INFO, okm.as_mut())
             .map_err(|_| RecoveryError::Kdf)?;
-        Ok(Seed32::from_bytes(*okm))
+        Ok(Seed32::from_buffer(okm))
     }
 
     /// The phrase as a single space-separated string, in a zeroized buffer.
