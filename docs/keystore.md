@@ -51,12 +51,16 @@ the KDF, and rejected with `KdfParamsOutOfRange`:
 
 | Parameter | Accepted on open | Default written (v1) |
 |---|---|---|
-| `m_cost` | ≤ 1 GiB (`ARGON2_MAX_M_COST_KIB`) | 65536 KiB (64 MiB) |
-| `t_cost` | 1..=64 (`ARGON2_MAX_T_COST`) | 8 |
+| `m_cost` | ≤ 512 MiB (`ARGON2_MAX_M_COST_KIB`) | 65536 KiB (64 MiB) |
+| `t_cost` | 1..=16 (`ARGON2_MAX_T_COST`) | 8 |
 | `p_cost` | 1..=8 (`ARGON2_MAX_P_COST`) | 1 |
 
-Worst case a hostile file can demand is therefore bounded (~1 GiB, 64 passes),
-and the tag check right after exposes the forgery.
+Worst case a hostile file can demand is therefore bounded (~512 MiB, 16
+passes) — a forged header cannot OOM-kill the daemon — and the tag check right
+after exposes the forgery. The ceilings still leave 8×/2× headroom over the
+defaults for a future difficulty raise; because parameters are header-carried,
+raising them needs no format bump. These are open-time validation bounds only:
+the on-disk v1 format is unchanged.
 
 ## Calibration of the defaults (measured 2026-07-06)
 

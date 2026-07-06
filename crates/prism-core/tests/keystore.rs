@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 
 use prism_core::keystore::{
     open_bytes, open_from_path, seal_bytes, seal_to_path, KeystoreContents, KeystoreError,
-    ARGON2_MAX_M_COST_KIB, FORMAT_VERSION, HEADER_LEN, MAGIC, MAX_KEYSTORE_LEN, M_COST_OFFSET,
-    NICK_MAX_BYTES, NONCE_LEN, NONCE_OFFSET, SALT_LEN, SALT_OFFSET, T_COST_OFFSET,
+    ARGON2_MAX_M_COST_KIB, ARGON2_MAX_T_COST, FORMAT_VERSION, HEADER_LEN, MAGIC, MAX_KEYSTORE_LEN,
+    M_COST_OFFSET, NICK_MAX_BYTES, NONCE_LEN, NONCE_OFFSET, SALT_LEN, SALT_OFFSET, T_COST_OFFSET,
 };
 use prism_core::recovery::RecoveryPhrase;
 use prism_core::{IdentityKeypair, Passphrase, Seed32};
@@ -230,6 +230,28 @@ fn hostile_kdf_params_are_rejected_before_running_the_kdf() {
         open_bytes(&zero_t, &passphrase()),
         Err(KeystoreError::KdfParamsOutOfRange { t: 0, .. })
     ));
+
+    // Just above the (tightened) iteration ceiling.
+    let mut above_t = image().to_vec();
+    above_t[T_COST_OFFSET..T_COST_OFFSET + 4]
+        .copy_from_slice(&(ARGON2_MAX_T_COST + 1).to_be_bytes());
+    assert!(matches!(
+        open_bytes(&above_t, &passphrase()),
+        Err(KeystoreError::KdfParamsOutOfRange { .. })
+    ));
+}
+
+/// Lock in the tightened open-time ceilings: a forged header cannot demand
+/// more than 512 MiB / 16 passes, so it cannot OOM-kill the daemon. The
+/// defaults must stay well within these bounds so existing v1 files keep
+/// opening (the on-disk format is unchanged).
+#[test]
+fn open_time_ceilings_are_tight() {
+    use prism_core::keystore::{ARGON2_DEFAULT_M_COST_KIB, ARGON2_DEFAULT_T_COST};
+    assert_eq!(ARGON2_MAX_M_COST_KIB, 512 * 1024);
+    assert_eq!(ARGON2_MAX_T_COST, 16);
+    assert!(ARGON2_DEFAULT_M_COST_KIB <= ARGON2_MAX_M_COST_KIB);
+    assert!(ARGON2_DEFAULT_T_COST <= ARGON2_MAX_T_COST);
 }
 
 /// The critical M1 property (spec §4.2): the on-disk keystore must not reveal

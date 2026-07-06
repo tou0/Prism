@@ -89,16 +89,19 @@ pub const ARGON2_DEFAULT_T_COST: u32 = 8;
 /// Default Argon2id parallelism written into new keystores.
 pub const ARGON2_DEFAULT_P_COST: u8 = 1;
 
-/// Maximum Argon2id memory cost accepted when *opening* a keystore (1 GiB).
+/// Maximum Argon2id memory cost accepted when *opening* a keystore (512 MiB).
 ///
 /// The header's KDF parameters can only be authenticated after the KDF has
 /// run, so a forged header could otherwise demand arbitrary memory. This cap
-/// bounds that to a survivable allocation while leaving generous headroom for
-/// future difficulty raises.
-pub const ARGON2_MAX_M_COST_KIB: u32 = 1024 * 1024;
+/// keeps that within a survivable allocation (a forged header cannot OOM-kill
+/// the daemon) while still leaving 8× headroom over the 64 MiB default for
+/// future difficulty raises. Validation only — it does not affect the on-disk
+/// format, which carries its own parameters per file.
+pub const ARGON2_MAX_M_COST_KIB: u32 = 512 * 1024;
 /// Maximum Argon2id iteration count accepted when opening (same rationale as
 /// [`ARGON2_MAX_M_COST_KIB`]: bound the CPU work a forged header can demand).
-pub const ARGON2_MAX_T_COST: u32 = 64;
+/// 2× the default of 8, leaving room for a future raise without a format bump.
+pub const ARGON2_MAX_T_COST: u32 = 16;
 /// Maximum Argon2id parallelism accepted when opening.
 pub const ARGON2_MAX_P_COST: u8 = 8;
 
