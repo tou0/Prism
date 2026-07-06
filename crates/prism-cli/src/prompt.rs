@@ -71,7 +71,7 @@ pub fn passphrase_new() -> Result<Sensitive> {
             eprintln!("{}", text::ERR_PASSPHRASE_MISMATCH);
             continue;
         }
-        return Ok(Sensitive::new(first.to_string()));
+        return Ok(Sensitive::from_zeroizing(first));
     }
     bail!(text::ERR_TOO_MANY_ATTEMPTS)
 }
@@ -87,7 +87,7 @@ pub fn passphrase() -> Result<Sensitive> {
             eprintln!("{}", text::ERR_PASSPHRASE_EMPTY);
             continue;
         }
-        return Ok(Sensitive::new(entered.to_string()));
+        return Ok(Sensitive::from_zeroizing(entered));
     }
     bail!(text::ERR_TOO_MANY_ATTEMPTS)
 }
@@ -115,7 +115,7 @@ pub fn mnemonic() -> Result<Sensitive> {
                 .context("reading the recovery phrase")?,
         );
         match RecoveryPhrase::parse(&entered) {
-            Ok(phrase) => return Ok(Sensitive::new(phrase.expose_phrase().to_string())),
+            Ok(phrase) => return Ok(Sensitive::from_zeroizing(phrase.expose_phrase())),
             Err(e) => eprintln!("{e}"),
         }
     }

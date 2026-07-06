@@ -3,6 +3,7 @@
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::Zeroizing;
 
 /// A secret string (passphrase, mnemonic) inside an IPC message.
 ///
@@ -18,6 +19,19 @@ impl Sensitive {
     /// Wrap a secret string, taking ownership.
     pub fn new(secret: String) -> Self {
         Self(SecretString::from(secret))
+    }
+
+    /// Wrap a secret already held in a `Zeroizing<String>`, moving its buffer
+    /// out without an intermediate bare `String` copy.
+    ///
+    /// Prefer this over `Sensitive::new(z.to_string())` at call sites that
+    /// already hold a zeroizing buffer (passphrase input, an exposed
+    /// mnemonic): `.to_string()` would allocate a *second* plaintext copy of
+    /// the secret. `mem::take` hands the original heap buffer straight to the
+    /// `SecretString`, leaving an empty (harmless) string behind in the
+    /// `Zeroizing` wrapper.
+    pub fn from_zeroizing(mut secret: Zeroizing<String>) -> Self {
+        Self(SecretString::from(std::mem::take(&mut *secret)))
     }
 
     /// Borrow the secret. Keep the borrow as short as possible; never copy
@@ -61,6 +75,12 @@ mod tests {
         let debug = format!("{secret:?}");
         assert!(!debug.contains("hunter2"));
         assert!(debug.contains("redacted"));
+    }
+
+    #[test]
+    fn from_zeroizing_preserves_the_secret() {
+        let secret = Sensitive::from_zeroizing(Zeroizing::new("correct horse".to_owned()));
+        assert_eq!(secret.expose(), "correct horse");
     }
 
     #[test]

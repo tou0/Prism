@@ -152,7 +152,7 @@ async fn handle_init(
             let response = Response::Created {
                 handle: identity.handle(),
                 fingerprint: identity.fingerprint(),
-                mnemonic: mnemonic.map(|m| Sensitive::new(m.to_string())),
+                mnemonic: mnemonic.map(Sensitive::from_zeroizing),
             };
             *unlocked = Some(identity);
             response
