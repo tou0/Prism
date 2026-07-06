@@ -25,7 +25,7 @@ async fn ping_pong_end_to_end() {
         .expect("send ping");
 
     let response: Envelope<Response> = read_message(&mut stream).await.expect("read response");
-    assert_eq!(response.message, Response::Pong);
+    assert!(matches!(response.message, Response::Pong));
 }
 
 #[tokio::test]
@@ -105,5 +105,5 @@ async fn truncated_frame_does_not_crash_the_daemon() {
         .await
         .expect("send ping");
     let response: Envelope<Response> = read_message(&mut good).await.expect("read response");
-    assert_eq!(response.message, Response::Pong);
+    assert!(matches!(response.message, Response::Pong));
 }

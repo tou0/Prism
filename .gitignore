@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 
+
+# Local Claude Code session settings (never repo material)
+.claude/settings.local.json*

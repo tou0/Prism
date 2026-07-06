@@ -10,6 +10,7 @@ use std::io::ErrorKind;
 
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 use crate::ProtoError;
 
@@ -23,7 +24,9 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let body = serde_json::to_vec(message)?;
+    // Zeroized on drop: the serialized body may contain secrets (passphrase,
+    // mnemonic) in the clear.
+    let body = Zeroizing::new(serde_json::to_vec(message)?);
     let len =
         u32::try_from(body.len()).map_err(|_| ProtoError::FrameTooLarge { len: body.len() })?;
     if len > MAX_FRAME_LEN {
@@ -70,7 +73,9 @@ where
         return Err(ProtoError::FrameTooLarge { len: len as usize });
     }
 
-    let mut body = vec![0u8; len as usize];
+    // Zeroized on drop: the received body may contain secrets (passphrase,
+    // mnemonic) in the clear.
+    let mut body = Zeroizing::new(vec![0u8; len as usize]);
     reader.read_exact(&mut body).await?;
     let message = serde_json::from_slice(&body)?;
     Ok(Some(message))
@@ -93,7 +98,7 @@ mod tests {
             .await
             .expect("read should succeed");
         assert_eq!(received.version, PROTOCOL_VERSION);
-        assert_eq!(received.message, Request::Ping);
+        assert!(matches!(received.message, Request::Ping));
     }
 
     #[tokio::test]

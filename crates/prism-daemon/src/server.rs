@@ -64,6 +64,11 @@ fn dispatch(envelope: Envelope<Request>) -> Response {
 
     match envelope.message {
         Request::Ping => Response::Pong,
+        // Identity/keystore requests are wired to real handlers in the next
+        // M1 step (daemon state); until then they are honestly refused.
+        _ => Response::Error {
+            message: "this request is not implemented yet".to_owned(),
+        },
     }
 }
 
@@ -74,7 +79,7 @@ mod tests {
     #[test]
     fn ping_is_answered_with_pong() {
         let response = dispatch(Envelope::new(Request::Ping));
-        assert_eq!(response, Response::Pong);
+        assert!(matches!(response, Response::Pong));
     }
 
     #[test]

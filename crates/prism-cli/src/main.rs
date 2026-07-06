@@ -81,5 +81,7 @@ async fn ping(socket_path: &Path) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => anyhow::bail!("daemon returned an error: {message}"),
+        // Defensive: the daemon never answers a ping with anything else.
+        other => anyhow::bail!("unexpected response from the daemon: {other:?}"),
     }
 }
