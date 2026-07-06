@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 
 use prism_core::keystore::{
     open_bytes, open_from_path, seal_bytes, seal_to_path, KeystoreContents, KeystoreError,
-    ARGON2_MAX_M_COST_KIB, FORMAT_VERSION, HEADER_LEN, MAGIC, M_COST_OFFSET, NICK_MAX_BYTES,
-    NONCE_LEN, NONCE_OFFSET, SALT_LEN, SALT_OFFSET, T_COST_OFFSET,
+    ARGON2_MAX_M_COST_KIB, FORMAT_VERSION, HEADER_LEN, MAGIC, MAX_KEYSTORE_LEN, M_COST_OFFSET,
+    NICK_MAX_BYTES, NONCE_LEN, NONCE_OFFSET, SALT_LEN, SALT_OFFSET, T_COST_OFFSET,
 };
 use prism_core::recovery::RecoveryPhrase;
 use prism_core::{IdentityKeypair, Passphrase, Seed32};
@@ -304,6 +304,22 @@ fn atomic_write_creates_locked_down_files_and_respects_force() {
     seal_to_path(&path, &other, &passphrase(), true).unwrap();
     let reopened = open_from_path(&path, &passphrase()).unwrap();
     assert_eq!(reopened.nick(), "bob");
+}
+
+#[test]
+fn an_oversized_file_is_rejected_before_reading_it_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bloated.pks");
+
+    // A valid image followed by a large blob: bigger than any real keystore.
+    let mut bloated = image().to_vec();
+    bloated.extend(std::iter::repeat(0u8).take(MAX_KEYSTORE_LEN + 4096));
+    std::fs::write(&path, &bloated).unwrap();
+
+    assert!(matches!(
+        open_from_path(&path, &passphrase()),
+        Err(KeystoreError::TooLarge)
+    ));
 }
 
 #[test]

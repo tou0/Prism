@@ -44,7 +44,7 @@
 //! thread** — use `spawn_blocking`.
 
 use std::fs;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -109,6 +109,14 @@ pub const NICK_MAX_BYTES: usize = 128;
 /// Smallest well-formed plaintext payload: seed ‖ nick_len ‖ 1-byte nick.
 const MIN_PAYLOAD_LEN: usize = Seed32::LEN + 2 + 1;
 
+/// Largest a valid keystore file can possibly be: the fixed header, plus the
+/// biggest permitted payload (seed ‖ nick_len ‖ [`NICK_MAX_BYTES`] nick), plus
+/// the AEAD tag. A well-formed keystore is ~100–223 bytes; anything larger is
+/// not a v1 keystore. Used to bound the read in [`open_from_path`] so a
+/// tampered/oversized file (or a `/dev/zero` symlink) cannot force an
+/// unbounded allocation before any validation runs.
+pub const MAX_KEYSTORE_LEN: usize = HEADER_LEN + Seed32::LEN + 2 + NICK_MAX_BYTES + TAG_LEN;
+
 /// Errors produced by the keystore. No variant ever carries secret material.
 #[derive(Debug, thiserror::Error)]
 pub enum KeystoreError {
@@ -145,6 +153,11 @@ pub enum KeystoreError {
     /// The file is too short to possibly be a valid keystore.
     #[error("keystore file is truncated")]
     Truncated,
+    /// The file is larger than any valid keystore could be. Rejected before
+    /// the whole file is read into memory, so a tampered/oversized file (or a
+    /// `/dev/zero` symlink) cannot force an unbounded allocation.
+    #[error("keystore file is too large to be valid (over {MAX_KEYSTORE_LEN} bytes)")]
+    TooLarge,
     /// The header's Argon2 parameters are outside the bounds this build
     /// accepts. Rejected *before* the KDF runs: a forged header must not be
     /// able to demand absurd memory or CPU work (the parameters are only
@@ -479,12 +492,22 @@ pub fn open_from_path(
     path: &Path,
     passphrase: &Passphrase,
 ) -> Result<KeystoreContents, KeystoreError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(KeystoreError::NotFound(path.to_path_buf()))
         }
         Err(e) => return Err(e.into()),
     };
+    // Read at most one byte past the largest valid keystore: enough to tell a
+    // legitimate file from an oversized one, without ever allocating for a
+    // hostile length. `take` bounds the read regardless of the file's actual
+    // (or unbounded, e.g. a `/dev/zero` symlink) size.
+    let mut bytes = Vec::with_capacity(MAX_KEYSTORE_LEN + 1);
+    file.take(MAX_KEYSTORE_LEN as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_KEYSTORE_LEN {
+        return Err(KeystoreError::TooLarge);
+    }
     open_bytes(&bytes, passphrase)
 }
