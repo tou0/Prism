@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `prism` — the Prism thin client binary.
 //!
-//! Talks to the local `prismd` daemon over the IPC socket. For milestone M0 it
-//! offers a single `ping` command that proves the IPC round-trip works.
+//! Talks to the local `prismd` daemon over the IPC socket. The client never
+//! holds a private key: key material is generated, sealed, and unlocked
+//! daemon-side; this binary only collects input and displays results.
 
-use std::path::{Path, PathBuf};
+mod commands;
+mod prompt;
+mod text;
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use tokio::net::UnixStream;
-
-use prism_proto::{read_message, write_message, Envelope, Request, Response};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,6 +32,22 @@ struct Cli {
 enum Command {
     /// Ping the daemon; prints "pong" on success.
     Ping,
+    /// Create a new identity (interactive; requires a running daemon).
+    Init {
+        /// Overwrite an existing keystore. DESTROYS the current identity.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Recreate an identity from a recovery phrase (interactive).
+    Restore {
+        /// Overwrite an existing keystore. DESTROYS the current identity.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Unlock the keystore (interactive).
+    Unlock,
+    /// Show the currently unlocked identity.
+    Whoami,
 }
 
 fn main() -> Result<()> {
@@ -54,34 +72,10 @@ async fn run(cli: Cli) -> Result<()> {
     };
 
     match cli.command {
-        Command::Ping => ping(&socket_path).await,
-    }
-}
-
-/// Send a `Ping` to the daemon and print `pong` on success.
-async fn ping(socket_path: &Path) -> Result<()> {
-    let mut stream = UnixStream::connect(socket_path).await.with_context(|| {
-        format!(
-            "connecting to the daemon at {} (is prismd running?)",
-            socket_path.display()
-        )
-    })?;
-
-    write_message(&mut stream, &Envelope::new(Request::Ping))
-        .await
-        .context("sending ping to the daemon")?;
-
-    let response: Envelope<Response> = read_message(&mut stream)
-        .await
-        .context("reading the daemon's response")?;
-
-    match response.message {
-        Response::Pong => {
-            println!("pong");
-            Ok(())
-        }
-        Response::Error { message } => anyhow::bail!("daemon returned an error: {message}"),
-        // Defensive: the daemon never answers a ping with anything else.
-        other => anyhow::bail!("unexpected response from the daemon: {other:?}"),
+        Command::Ping => commands::ping(&socket_path).await,
+        Command::Init { force } => commands::init(&socket_path, force).await,
+        Command::Restore { force } => commands::restore(&socket_path, force).await,
+        Command::Unlock => commands::unlock(&socket_path).await,
+        Command::Whoami => commands::whoami(&socket_path).await,
     }
 }

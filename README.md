@@ -9,10 +9,13 @@ does **not** promise "100% secure" or "untraceable" — it maximizes protection
 and communicates its limits honestly. See [`docs/specification.md`](docs/specification.md)
 for the full design.
 
-> **Status: milestone M0 (Foundations).** This is a compiling, testable
-> skeleton: a five-crate workspace, a securely permissioned IPC socket, and an
-> end-to-end `ping`/`pong` between the client and the daemon. **There is no real
-> cryptography or networking yet** — those arrive in later milestones.
+> **Status: milestone M1 (Identity & keystore).** On top of the M0 foundations
+> (five-crate workspace, securely permissioned IPC socket, end-to-end
+> `ping`/`pong`), Prism now has real identities: Ed25519 keys with a
+> `nick#fingerprint` handle, an Argon2id + ChaCha20-Poly1305 encrypted
+> keystore with atomic writes, and an opt-in BIP-39 recovery phrase
+> (`init` / `unlock` / `restore` / `whoami`). **There is no networking or
+> messaging yet** — those arrive in later milestones.
 
 ## Workspace layout
 
@@ -37,27 +40,39 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-## Run: `ping` the daemon
+## Run
 
 The daemon listens on a Unix socket in the per-user runtime directory
 (`$XDG_RUNTIME_DIR/prism/prismd.sock`), created inside a `0700` directory with
-`0600` permissions and guarded by a peer-credential (UID) check.
+`0600` permissions and guarded by a peer-credential (UID) check. The encrypted
+keystore lives in the per-user data directory
+(`~/.local/share/prism/keystore.pks`; format: `docs/keystore.md`).
 
-In one terminal, start the daemon:
+In one terminal, start the daemon (it must be running for every command,
+including `init` — keys are generated daemon-side):
 
 ```sh
 cargo run --bin prismd
 ```
 
-In another, ping it:
+In another:
 
 ```sh
-cargo run --bin prism -- ping
-# -> pong
+cargo run --bin prism -- ping     # liveness check -> pong
+cargo run --bin prism -- init     # create an identity (interactive)
+cargo run --bin prism -- whoami   # show the unlocked identity
+cargo run --bin prism -- unlock   # unlock after a daemon restart
+cargo run --bin prism -- restore  # recreate an identity from a recovery phrase
 ```
 
-Both binaries accept `--socket <PATH>` to override the socket location (useful
-for running several instances or for scripting).
+`init` asks for a nickname, a passphrase, and whether to generate an optional
+12-word recovery phrase (shown once, never stored — anyone who reads it owns
+your identity; without it, a lost passphrase means a lost identity, which is
+the point). `init`/`restore` refuse to overwrite an existing keystore unless
+`--force` is given.
+
+Both binaries accept `--socket <PATH>`; the daemon also accepts
+`--keystore <PATH>`.
 
 ## License
 

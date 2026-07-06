@@ -23,3 +23,5 @@ prism-proto.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util"] }
 anyhow.workspace = true
 clap.workspace = true
+rpassword.workspace = true
+zeroize.workspace = true
