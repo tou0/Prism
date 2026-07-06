@@ -104,8 +104,10 @@ A messenger where **privacy is structural, not an option**. No central server, n
 - **Anti-impersonation**: prekeys signed by the identity key; out-of-band verification via SAS (short authentication strings).
 
 ### 5.2 At rest
-- **Passphrase → encryption key via Argon2id** (slow, memory-hard, GPU/ASIC-resistant; calibrated ~0.5–1 s).
-- **Encrypted keystore** (identity keys, ratchet state, prekeys, contacts, history) with an AEAD (**ChaCha20-Poly1305**), salt and nonce stored alongside.
+- **Passphrase → encryption key via Argon2id** (slow, memory-hard, GPU/ASIC-resistant). The **Argon2id parameters (m, t, p) are stored in the keystore header** and authenticated as AEAD associated data — see the crypto-agility note below and the full layout in `docs/keystore.md`.
+- **Calibration** (M1): defaults `m = 64 MiB, t = 8, p = 1` ≈ 330 ms on the reference machine (Ryzen 7 PRO 5850U), extrapolating to ~1–2 s on modest hardware. Beyond `t ≈ 10` the reference CPU gives no reliable extra wall-time, so **future hardening raises `m`, not `t`** — which the header-carried params make free (no format-version bump, no migration).
+- **Encrypted keystore** (M1: identity seed + nick; later: ratchet state, prekeys, contacts, history) with an AEAD (**ChaCha20-Poly1305**); fresh salt **and** nonce drawn from the OS CSPRNG on every write (a fresh salt means a fresh key, so nonce reuse is structurally impossible). The whole header (magic, version, KDF params, salt, nonce) is authenticated as AAD → any tamper fails the tag.
+- **Defensive open**: because the header's KDF params steer the KDF itself, the AEAD tag can only vouch for them *after* the KDF runs; they are therefore **bounds-checked before** running Argon2id (rejecting a forged header that would demand absurd memory/CPU) and the file read is size-bounded, so a tampered/oversized keystore cannot force unbounded allocation or an OOM-kill.
 - **Two distinct layers**: at rest (passphrase) + in transit (ratchet).
 
 ### 5.3 Hard crypto requirements
@@ -323,7 +325,7 @@ Adversaries to consider explicitly (in/out of scope per version):
 3. **Wire format**: ✅ **protobuf** (`prost`).
 4. **Offline relays**: ✅ 2–3 relays, reliability score + designated mailbox, configurable TTL (short default, 1-month ceiling), deletion on delivery, Hashcash.
 5. **Proof-of-work calibration**: ✅ context-based scale + recipient-verified adaptivity + memory-hard PoW; concrete difficulty levels still to set.
-6. **Argon2id parameters**: ✅ **fixed constants**, documented, calibrated ~0.5–1 s on a modest machine (not user-configurable). Keystore = a single encrypted file; its on-disk format MUST be **indistinguishable between recovery modes** (no field reveals whether a BIP-39 recovery phrase exists — otherwise device seizure would betray that a phrase is extractable, defeating the at-risk case).
+6. **Argon2id parameters**: ✅ **fixed defaults on write** (not user-configurable), but **carried in the keystore header and read back per file** — so difficulty can be raised later without a format-version bump or migrating old keystores (crypto agility, §14.1 / §5.2; full layout in `docs/keystore.md`). Calibrated M1 defaults: `m = 64 MiB, t = 8, p = 1`. Keystore = a single encrypted file whose on-disk format MUST be **indistinguishable between recovery modes** (no field reveals whether a BIP-39 recovery phrase exists — otherwise device seizure would betray that a phrase is extractable, defeating the at-risk case); the KDF params are identical across modes, so files stay byte-structurally identical.
 7. **Daemon↔client IPC protocol details.**
 8. **Test strategy**: to be completed later.
 9. **Maintainer keys**: ✅ 2-signature threshold, scheduled + on-suspicion rotation, revocation by signed notice, manifest at startup.
