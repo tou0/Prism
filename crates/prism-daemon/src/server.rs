@@ -27,6 +27,14 @@ use crate::DaemonError;
 /// UID matches the daemon's own UID is served. Any other peer, or a peer whose
 /// credentials cannot be read, is dropped. Authorized connections are handled
 /// on their own task.
+///
+/// Deferred (M2+, network threat model): there is no per-connection read
+/// timeout and no cap on concurrent connections, so a same-UID peer could
+/// stall a spawned task by sending a partial frame, or open many at once.
+/// Acceptable for M1 — the socket is `0600`/`0700` and `SO_PEERCRED`-gated to
+/// this user; a hostile *local same-UID* process is out of the M1 model.
+/// Add an idle/read timeout and an in-flight-connection bound alongside the
+/// network transport, when untrusted peers first reach the daemon.
 pub async fn serve(listener: UnixListener, state: Arc<AppState>) -> Result<(), DaemonError> {
     let our_uid = rustix::process::getuid().as_raw();
 

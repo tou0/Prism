@@ -441,6 +441,13 @@ pub fn seal_to_path(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // Note: `set_permissions` follows symlinks, so if `dir` is a symlink
+        // this chmods its target, and it only fixes the leaf directory (any
+        // parents created by `create_dir_all` keep the umask default). The
+        // keystore path is user-supplied (default or `--keystore`), so this is
+        // self-inflicted at worst, and the file itself is always 0600. Not
+        // hardened further in M1; revisit if paths ever become externally
+        // influenced.
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
 
