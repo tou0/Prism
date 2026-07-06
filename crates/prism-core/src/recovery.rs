@@ -144,7 +144,18 @@ impl RecoveryPhrase {
     /// For one-time display at `init` and for transporting a just-typed phrase
     /// to the daemon; never persist it.
     pub fn expose_phrase(&self) -> Zeroizing<String> {
-        let mut s = Zeroizing::new(String::new());
+        // Pre-size to the exact final length so the buffer never reallocates
+        // while being filled. A growing `String` copies the partial phrase
+        // into each larger allocation and frees the previous one *un-wiped*,
+        // scattering mnemonic fragments across the heap (spec §16 memory
+        // hygiene: fixed-size pre-allocated buffers). `parse()` already
+        // pre-allocates for the same reason; `words()` is cheap to walk twice.
+        let (content_len, word_count) = self
+            .0
+            .words()
+            .fold((0usize, 0usize), |(len, n), w| (len + w.len(), n + 1));
+        let capacity = content_len + word_count.saturating_sub(1);
+        let mut s = Zeroizing::new(String::with_capacity(capacity));
         for (i, word) in self.0.words().enumerate() {
             if i > 0 {
                 s.push(' ');
@@ -175,6 +186,19 @@ mod tests {
             reparsed.derive_identity_seed().unwrap().expose(),
             phrase.derive_identity_seed().unwrap().expose(),
             "reparsing the displayed phrase must regenerate the same identity"
+        );
+    }
+
+    #[test]
+    fn exposed_phrase_buffer_is_exactly_sized() {
+        // A String whose capacity equals its length was never grown after
+        // allocation, so no partial-phrase copy was left un-wiped on the heap.
+        let phrase = RecoveryPhrase::parse(KNOWN_PHRASE).unwrap();
+        let text = phrase.expose_phrase();
+        assert_eq!(
+            text.capacity(),
+            text.len(),
+            "expose_phrase must pre-size exactly so the buffer never reallocates"
         );
     }
 
