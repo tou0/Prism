@@ -250,8 +250,11 @@ fn open_time_ceilings_are_tight() {
     use prism_core::keystore::{ARGON2_DEFAULT_M_COST_KIB, ARGON2_DEFAULT_T_COST};
     assert_eq!(ARGON2_MAX_M_COST_KIB, 512 * 1024);
     assert_eq!(ARGON2_MAX_T_COST, 16);
-    assert!(ARGON2_DEFAULT_M_COST_KIB <= ARGON2_MAX_M_COST_KIB);
-    assert!(ARGON2_DEFAULT_T_COST <= ARGON2_MAX_T_COST);
+    // Compile-time: the defaults must stay within the (tightened) ceilings, so
+    // every keystore we write keeps opening. Const asserts fail the build, not
+    // just the test, if a future edit pushes a default past its ceiling.
+    const _: () = assert!(ARGON2_DEFAULT_M_COST_KIB <= ARGON2_MAX_M_COST_KIB);
+    const _: () = assert!(ARGON2_DEFAULT_T_COST <= ARGON2_MAX_T_COST);
 }
 
 /// The critical M1 property (spec §4.2): the on-disk keystore must not reveal
@@ -335,7 +338,7 @@ fn an_oversized_file_is_rejected_before_reading_it_all() {
 
     // A valid image followed by a large blob: bigger than any real keystore.
     let mut bloated = image().to_vec();
-    bloated.extend(std::iter::repeat(0u8).take(MAX_KEYSTORE_LEN + 4096));
+    bloated.resize(bloated.len() + MAX_KEYSTORE_LEN + 4096, 0u8);
     std::fs::write(&path, &bloated).unwrap();
 
     assert!(matches!(
