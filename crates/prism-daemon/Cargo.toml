@@ -24,7 +24,7 @@ path = "src/main.rs"
 [dependencies]
 prism-core.workspace = true
 prism-proto.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync"] }
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

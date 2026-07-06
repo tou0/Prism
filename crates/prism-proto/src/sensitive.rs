@@ -25,6 +25,12 @@ impl Sensitive {
     pub fn expose(&self) -> &str {
         self.0.expose_secret()
     }
+
+    /// Move the inner secret out, without copying it. For handing the secret
+    /// to another zeroizing wrapper (e.g. `prism_core::Passphrase`).
+    pub fn into_secret(self) -> SecretString {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Sensitive {

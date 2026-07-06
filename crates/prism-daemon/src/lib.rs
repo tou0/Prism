@@ -11,11 +11,13 @@
 
 pub mod server;
 pub mod socket;
+pub mod state;
 
 use std::path::PathBuf;
 
 pub use server::serve;
 pub use socket::{bind_secure, SocketGuard};
+pub use state::{AppState, UnlockedIdentity};
 
 /// Errors produced by the daemon.
 #[derive(Debug, thiserror::Error)]

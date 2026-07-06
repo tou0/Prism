@@ -2,12 +2,13 @@
 //! `prismd` — the Prism daemon binary.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::info;
 
-use prism_daemon::{bind_secure, serve, SocketGuard};
+use prism_daemon::{bind_secure, serve, AppState, SocketGuard};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -19,6 +20,9 @@ struct Args {
     /// Path to the IPC socket (defaults to the per-user runtime directory).
     #[arg(long)]
     socket: Option<PathBuf>,
+    /// Path to the encrypted keystore (defaults to the per-user data directory).
+    #[arg(long)]
+    keystore: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -44,14 +48,22 @@ async fn run(args: Args) -> Result<()> {
         }
     };
 
+    let keystore_path = match args.keystore {
+        Some(path) => path,
+        None => {
+            prism_core::default_keystore_path().context("resolving the default keystore path")?
+        }
+    };
+
     let listener = bind_secure(&socket_path)
         .with_context(|| format!("binding IPC socket at {}", socket_path.display()))?;
     // Unlink the socket file on shutdown.
     let _guard = SocketGuard::new(socket_path.clone());
+    let state = Arc::new(AppState::new(keystore_path));
     info!(socket = %socket_path.display(), "prismd is listening");
 
     tokio::select! {
-        result = serve(listener) => result.context("IPC server stopped unexpectedly")?,
+        result = serve(listener, state) => result.context("IPC server stopped unexpectedly")?,
         _ = shutdown_signal() => info!("shutdown signal received; exiting"),
     }
 

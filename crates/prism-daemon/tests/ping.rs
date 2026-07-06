@@ -3,11 +3,18 @@
 //! verify the `ping` -> `pong` exchange and the socket's permissions.
 
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Arc;
 
-use prism_daemon::{bind_secure, serve};
+use prism_daemon::{bind_secure, serve, AppState};
 use prism_proto::{read_message, write_message, Envelope, Request, Response, PROTOCOL_VERSION};
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
+
+/// State pointing at a keystore path that does not exist: fine for tests that
+/// never touch identity requests.
+fn test_state(dir: &tempfile::TempDir) -> Arc<AppState> {
+    Arc::new(AppState::new(dir.path().join("keystore.pks")))
+}
 
 #[tokio::test]
 async fn ping_pong_end_to_end() {
@@ -15,7 +22,7 @@ async fn ping_pong_end_to_end() {
     let socket = dir.path().join("run").join("prismd.sock");
 
     let listener = bind_secure(&socket).expect("bind secure socket");
-    tokio::spawn(serve(listener));
+    tokio::spawn(serve(listener, test_state(&dir)));
 
     let mut stream = UnixStream::connect(&socket)
         .await
@@ -56,7 +63,7 @@ async fn unknown_protocol_version_gets_error_response() {
     let socket = dir.path().join("run").join("prismd.sock");
 
     let listener = bind_secure(&socket).expect("bind secure socket");
-    tokio::spawn(serve(listener));
+    tokio::spawn(serve(listener, test_state(&dir)));
 
     let mut stream = UnixStream::connect(&socket)
         .await
@@ -81,7 +88,7 @@ async fn truncated_frame_does_not_crash_the_daemon() {
     let socket = dir.path().join("run").join("prismd.sock");
 
     let listener = bind_secure(&socket).expect("bind secure socket");
-    tokio::spawn(serve(listener));
+    tokio::spawn(serve(listener, test_state(&dir)));
 
     // A hostile client announces a length, sends fewer bytes, then disconnects.
     {
