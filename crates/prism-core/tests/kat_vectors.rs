@@ -184,3 +184,26 @@ fn chacha20poly1305_rfc8439_reference_vector() {
         )
         .is_err());
 }
+
+/// Golden vector for the M2 domain-separated identity signature: freezes the
+/// framing construction (`blake3(domain) ‖ message`) — an accidental change
+/// to the frame layout would silently break every signed artifact, so it can
+/// never slip through.
+#[test]
+fn identity_signature_golden_vector() {
+    use prism_core::Seed32;
+
+    const DOMAIN: &[u8] = b"prism kat signature domain";
+    let keypair = IdentityKeypair::from_seed(&Seed32::from_bytes([0x11; 32]));
+    let signature = keypair.sign(DOMAIN, b"prism kat message");
+
+    assert_eq!(
+        hex::encode(signature),
+        "8638db36690ea685989c50410e08fb0ff8c36fc72dcbc581eaeb8efc034b006b237ea950ba97f1e44d935899b226ab28cb8e4a8c4d5bbc1a919639df6c3ebb0c",
+        "the domain-framed signature construction changed"
+    );
+    assert!(keypair
+        .public()
+        .verify(DOMAIN, b"prism kat message", &signature)
+        .is_ok());
+}

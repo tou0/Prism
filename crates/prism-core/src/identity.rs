@@ -12,13 +12,38 @@
 //! `Clone`/`Debug`/`Display` and zeroizes its key material on drop (via
 //! `ed25519-dalek`'s `zeroize` feature).
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 
 use crate::secret::{RngError, Seed32};
 
 /// Number of base58 characters shown in the short (handle) fingerprint.
 /// 14 characters ≈ 82 bits of the blake3 hash (spec §4.1).
 pub const SHORT_FINGERPRINT_LEN: usize = 14;
+
+/// Length of an Ed25519 signature, in bytes.
+pub const SIGNATURE_LEN: usize = 64;
+
+/// A signature failed verification under the claimed identity.
+///
+/// Deliberately carries no detail: every cause (forged, tampered, wrong key,
+/// wrong domain) must be treated identically by callers.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid signature")]
+pub struct BadSignature;
+
+/// Frame a message under a signing domain: `blake3(domain) ‖ message`.
+///
+/// Every Prism signature is made over a domain-framed message, so a signature
+/// produced for one purpose can never verify for another (no cross-protocol
+/// reuse). Hashing the domain gives a fixed-width, unambiguous prefix with no
+/// preconditions on the domain bytes themselves.
+fn domain_framed(domain: &[u8], message: &[u8]) -> Vec<u8> {
+    let tag = blake3::hash(domain);
+    let mut framed = Vec::with_capacity(blake3::OUT_LEN + message.len());
+    framed.extend_from_slice(tag.as_bytes());
+    framed.extend_from_slice(message);
+    framed
+}
 
 /// Maximum nickname length, in characters.
 pub const NICK_MAX_CHARS: usize = 32;
@@ -93,6 +118,16 @@ impl IdentityKeypair {
     pub fn public(&self) -> PublicIdentity {
         PublicIdentity(self.signing.verifying_key())
     }
+
+    /// Sign `message` under a domain (see [`domain_framed`]). The domain must
+    /// be a crate-defined constant naming exactly one purpose; the resulting
+    /// signature verifies only via [`PublicIdentity::verify`] with the same
+    /// domain.
+    pub fn sign(&self, domain: &'static [u8], message: &[u8]) -> [u8; SIGNATURE_LEN] {
+        self.signing
+            .sign(&domain_framed(domain, message))
+            .to_bytes()
+    }
 }
 
 /// The public half of a Prism identity. Public data: freely printable.
@@ -114,6 +149,23 @@ impl PublicIdentity {
     /// Deterministic: the same key and nick always produce the same handle.
     pub fn handle(&self, nick: &str) -> String {
         format!("{nick}#{}", self.fingerprint().short())
+    }
+
+    /// Verify a domain-separated signature made by [`IdentityKeypair::sign`].
+    ///
+    /// Uses `verify_strict` (not plain `verify`): it additionally rejects
+    /// signatures involving small-order components and other cofactor /
+    /// malleability edge cases (spec §5.3 "Ed25519 verification edge cases").
+    pub fn verify(
+        &self,
+        domain: &'static [u8],
+        message: &[u8],
+        signature: &[u8; SIGNATURE_LEN],
+    ) -> Result<(), BadSignature> {
+        let signature = ed25519_dalek::Signature::from_bytes(signature);
+        self.0
+            .verify_strict(&domain_framed(domain, message), &signature)
+            .map_err(|_| BadSignature)
     }
 }
 
@@ -208,6 +260,37 @@ mod tests {
         for nick in ["alice", "Alice42", "a", "émilie", "nick-o_matic.9"] {
             assert_eq!(validate_nick(nick), Ok(()), "nick {nick:?} should pass");
         }
+    }
+
+    #[test]
+    fn signatures_round_trip_and_bind_to_domain_message_and_key() {
+        const DOMAIN_A: &[u8] = b"prism test domain A";
+        const DOMAIN_B: &[u8] = b"prism test domain B";
+        let keypair = IdentityKeypair::from_seed(&fixed_seed(0x11));
+        let public = keypair.public();
+        let message = b"hello prism";
+
+        let sig = keypair.sign(DOMAIN_A, message);
+        assert!(public.verify(DOMAIN_A, message, &sig).is_ok());
+
+        // Wrong domain, wrong message, wrong key, tampered signature: all fail.
+        assert!(public.verify(DOMAIN_B, message, &sig).is_err());
+        assert!(public.verify(DOMAIN_A, b"hello prisn", &sig).is_err());
+        let other = IdentityKeypair::from_seed(&fixed_seed(0x12)).public();
+        assert!(other.verify(DOMAIN_A, message, &sig).is_err());
+        let mut tampered = sig;
+        tampered[0] ^= 0x01;
+        assert!(public.verify(DOMAIN_A, message, &tampered).is_err());
+    }
+
+    #[test]
+    fn signing_is_deterministic() {
+        // Ed25519 signatures are deterministic: same key, domain, and message
+        // always produce the same bytes (a property the bundle golden vector
+        // in tests/kat_vectors.rs relies on).
+        const DOMAIN: &[u8] = b"prism test domain A";
+        let keypair = IdentityKeypair::from_seed(&fixed_seed(0x11));
+        assert_eq!(keypair.sign(DOMAIN, b"msg"), keypair.sign(DOMAIN, b"msg"));
     }
 
     #[test]
