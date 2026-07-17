@@ -40,6 +40,13 @@ tracing-subscriber = "0.3"
 rustix = { version = "1", features = ["process"] }
 tempfile = "3"
 
+# M2 — the audited Olm/Megolm protocol implementation (docs/specification.md §5.1,
+# docs/sessions.md). default-features = false drops libolm compatibility (we only
+# use native pickles).
+vodozemac = { version = "0.10", default-features = false }
+# Dev-only: property-based tests (spec §15).
+proptest = "1"
+
 # M1 — identity & keystore crypto (docs/specification.md §4-5, docs/keystore.md).
 # Audited RustCrypto / dalek primitives only; never hand-rolled crypto.
 argon2 = "0.5"

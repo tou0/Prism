@@ -207,3 +207,32 @@ fn identity_signature_golden_vector() {
         .verify(DOMAIN, b"prism kat message", &signature)
         .is_ok());
 }
+
+/// Golden vector for the M2 canonical prekey-bundle encoding + signature:
+/// freezes the wire layout (version ‖ ik_ed ‖ ik_curve ‖ fallback ‖ count ‖
+/// otks ‖ sig). Any accidental layout change would silently invalidate every
+/// published bundle, so it can never slip through.
+#[test]
+fn prekey_bundle_golden_vector() {
+    use prism_core::bundle::{open_bundle, seal_bundle};
+    use prism_core::Seed32;
+
+    let signer = IdentityKeypair::from_seed(&Seed32::from_bytes([0x21; 32]));
+    let mut ik_curve = [0u8; 32];
+    ik_curve[0] = 2;
+    ik_curve[1] = 1;
+    let mut fallback = [0u8; 32];
+    fallback[0] = 3;
+    fallback[1] = 1;
+    let mut otk = [0u8; 32];
+    otk[0] = 5;
+    otk[1] = 1;
+
+    let wire = seal_bundle(&signer, &ik_curve, &fallback, &[otk]).expect("seal");
+    assert_eq!(
+        blake3::hash(&wire).to_hex().as_str(),
+        "d5d45666a84341c6d30b64f6b3ee6fdf527ba4254c7552d6bc4bac09d0371f98",
+        "the canonical bundle encoding or signature construction changed"
+    );
+    assert!(open_bundle(&signer.public(), &wire).is_ok());
+}

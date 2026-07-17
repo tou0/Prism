@@ -6,6 +6,7 @@
 //! dependencies. Also provides shared constants and the resolution of default
 //! paths (IPC socket, keystore file).
 
+pub mod bundle;
 pub mod identity;
 pub mod keystore;
 pub mod recovery;
