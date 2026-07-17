@@ -10,12 +10,14 @@ pub mod identity;
 pub mod keystore;
 pub mod recovery;
 pub mod secret;
+pub mod validate;
 
 pub use identity::{
     validate_nick, BadSignature, Fingerprint, IdentityKeypair, NickError, PublicIdentity,
     NICK_MAX_CHARS, SHORT_FINGERPRINT_LEN, SIGNATURE_LEN,
 };
 pub use secret::{Passphrase, RngError, Seed32};
+pub use validate::KeyRejection;
 
 use std::path::PathBuf;
 

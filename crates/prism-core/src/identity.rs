@@ -135,6 +135,14 @@ impl IdentityKeypair {
 pub struct PublicIdentity(VerifyingKey);
 
 impl PublicIdentity {
+    /// Parse an **externally received** identity key, with strict validation
+    /// (spec §5.3): off-curve, non-canonical, and weak/small-order encodings
+    /// are all rejected. This is the only way to build a `PublicIdentity`
+    /// from raw bytes — there is no unvalidated path.
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, crate::validate::KeyRejection> {
+        Ok(Self(crate::validate::validate_ed25519_public(bytes)?))
+    }
+
     /// The raw Ed25519 public key bytes.
     pub fn as_bytes(&self) -> &[u8; 32] {
         self.0.as_bytes()
