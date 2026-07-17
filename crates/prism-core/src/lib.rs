@@ -11,6 +11,9 @@ pub mod identity;
 pub mod keystore;
 pub mod recovery;
 pub mod secret;
+pub mod session;
+pub mod session_store;
+pub(crate) mod storage;
 pub mod validate;
 
 pub use identity::{

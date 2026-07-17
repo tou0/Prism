@@ -43,8 +43,6 @@
 //! calibration in `docs/keystore.md`): **never call them on an async executor
 //! thread** — use `spawn_blocking`.
 
-use std::fs;
-use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -411,19 +409,13 @@ fn parse_payload(payload: &[u8]) -> Result<KeystoreContents, KeystoreError> {
     })
 }
 
-/// Path of the temporary sibling used for atomic writes: `<file>.tmp`.
-fn tmp_sibling(path: &Path) -> PathBuf {
-    let mut os = path.as_os_str().to_owned();
-    os.push(".tmp");
-    PathBuf::from(os)
-}
-
 /// Seal `contents` and write the keystore file atomically.
 ///
 /// Refuses to overwrite an existing keystore unless `force` is set. The write
 /// is crash-safe: temp file (created `0600`) → fsync → rename over the final
-/// path → fsync of the parent directory (which is forced to `0700`).
-/// Blocking (runs Argon2id): use `spawn_blocking` from async code.
+/// path → fsync of the parent directory (which is forced to `0700`); see
+/// [`crate::storage`]. Blocking (runs Argon2id): use `spawn_blocking` from
+/// async code.
 pub fn seal_to_path(
     path: &Path,
     contents: &KeystoreContents,
@@ -433,66 +425,11 @@ pub fn seal_to_path(
     if path.exists() && !force {
         return Err(KeystoreError::AlreadyExists(path.to_path_buf()));
     }
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
+    let dir = crate::storage::prepare_private_dir(path)?
         .ok_or_else(|| KeystoreError::BadPath(path.to_path_buf()))?;
-    fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Note: `set_permissions` follows symlinks, so if `dir` is a symlink
-        // this chmods its target, and it only fixes the leaf directory (any
-        // parents created by `create_dir_all` keep the umask default). The
-        // keystore path is user-supplied (default or `--keystore`), so this is
-        // self-inflicted at worst, and the file itself is always 0600. Not
-        // hardened further in M1; revisit if paths ever become externally
-        // influenced.
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-    }
 
     let image = seal_bytes(contents, passphrase)?;
-
-    let tmp_path = tmp_sibling(path);
-    // Remove a stale temp file left behind by a crashed earlier attempt.
-    match fs::remove_file(&tmp_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
-
-    let result = write_atomically(&tmp_path, path, dir, &image);
-    if result.is_err() {
-        // Best-effort cleanup; the original keystore (if any) is untouched.
-        let _ = fs::remove_file(&tmp_path);
-    }
-    result
-}
-
-/// The atomic tail of [`seal_to_path`]: write temp → fsync → rename → fsync
-/// the directory.
-fn write_atomically(
-    tmp_path: &Path,
-    path: &Path,
-    dir: &Path,
-    image: &[u8],
-) -> Result<(), KeystoreError> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut tmp = options.open(tmp_path)?;
-    tmp.write_all(image)?;
-    tmp.sync_all()?;
-    drop(tmp);
-
-    fs::rename(tmp_path, path)?;
-    // Make the rename itself durable.
-    #[cfg(unix)]
-    fs::File::open(dir)?.sync_all()?;
+    crate::storage::write_atomically_private(path, dir, &image)?;
     Ok(())
 }
 
@@ -502,20 +439,11 @@ pub fn open_from_path(
     path: &Path,
     passphrase: &Passphrase,
 ) -> Result<KeystoreContents, KeystoreError> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(KeystoreError::NotFound(path.to_path_buf()))
-        }
-        Err(e) => return Err(e.into()),
-    };
-    // Read at most one byte past the largest valid keystore: enough to tell a
-    // legitimate file from an oversized one, without ever allocating for a
-    // hostile length. `take` bounds the read regardless of the file's actual
-    // (or unbounded, e.g. a `/dev/zero` symlink) size.
-    let mut bytes = Vec::with_capacity(MAX_KEYSTORE_LEN + 1);
-    file.take(MAX_KEYSTORE_LEN as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    // The read is bounded to one byte past the largest valid keystore: enough
+    // to tell a legitimate file from an oversized one, without ever
+    // allocating for a hostile length (e.g. a `/dev/zero` symlink).
+    let bytes = crate::storage::read_bounded(path, MAX_KEYSTORE_LEN)?
+        .ok_or_else(|| KeystoreError::NotFound(path.to_path_buf()))?;
     if bytes.len() > MAX_KEYSTORE_LEN {
         return Err(KeystoreError::TooLarge);
     }

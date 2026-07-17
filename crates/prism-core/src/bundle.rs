@@ -68,6 +68,10 @@ pub enum KeySlot {
     FallbackKey,
     /// The i-th one-time key.
     OneTimeKey(u16),
+    /// The ephemeral base key of a pre-key message.
+    EphemeralBaseKey,
+    /// The ratchet key of a normal message.
+    RatchetKey,
 }
 
 /// Errors produced while building or ingesting a bundle. Never carries key
