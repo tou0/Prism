@@ -9,21 +9,24 @@ does **not** promise "100% secure" or "untraceable" — it maximizes protection
 and communicates its limits honestly. See [`docs/specification.md`](docs/specification.md)
 for the full design.
 
-> **Status: milestone M1 (Identity & keystore).** On top of the M0 foundations
-> (five-crate workspace, securely permissioned IPC socket, end-to-end
-> `ping`/`pong`), Prism now has real identities: Ed25519 keys with a
-> `nick#fingerprint` handle, an Argon2id + ChaCha20-Poly1305 encrypted
-> keystore with atomic writes, and an opt-in BIP-39 recovery phrase
-> (`init` / `unlock` / `restore` / `whoami`). **There is no networking or
-> messaging yet** — those arrive in later milestones.
+> **Status: milestone M2 (Encrypted sessions — crypto core).** On top of the
+> M1 identities (Ed25519 `nick#fingerprint` handles, sealed Argon2id +
+> ChaCha20-Poly1305 keystore, opt-in BIP-39 recovery), Prism now has complete
+> encrypted 1:1 sessions: Olm 3DH establishment + Double Ratchet via the
+> audited `vodozemac`, identity-signed prekey bundles, strict public-key
+> validation on ingestion, and a sealed ratchet-state store with a
+> persist-before-transmit crash-safety contract (`docs/sessions.md`).
+> Sessions are exercised **locally** (see
+> `cargo run -p prism-core --example local_chat`) — **there is no networking
+> yet**; mDNS discovery and `send`/`inbox` arrive with M2b.
 
 ## Workspace layout
 
 | Crate | Role |
 |---|---|
-| `prism-core` | Core types, identity, cryptography, keystore (no network/UI deps). |
+| `prism-core` | Core types, identity, encrypted sessions (vodozemac), keystore, ratchet store (no network/UI deps). |
 | `prism-proto` | IPC message types and the framed serde codec. |
-| `prism-net` | libp2p networking layer (placeholder until M2). |
+| `prism-net` | libp2p networking layer (placeholder until M2b). |
 | `prism-daemon` | Background daemon `prismd`: holds keys, runs the network, exposes the IPC socket. |
 | `prism-cli` | Thin client `prism`: talks to the daemon over IPC. |
 
