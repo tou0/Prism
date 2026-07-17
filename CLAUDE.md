@@ -14,7 +14,7 @@ Ethos: privacy by design, a user-run network, **no authority over the network**,
 - **AGPL-3.0-or-later.** Add `// SPDX-License-Identifier: AGPL-3.0-or-later` at the top of every source file, and set `license = "AGPL-3.0-or-later"` in each crate's `Cargo.toml`. A `LICENSE` file with the full AGPL-3.0 text lives at the repo root.
 
 ## Absolute rules (NEVER violate)
-- **Never roll your own crypto.** Protocol = `vodozemac` (Olm/Megolm). Primitives = RustCrypto / `*-dalek`. No manual implementation of X3DH, the ratchet, AEAD, or KDF.
+- **Never roll your own crypto.** Protocol = `vodozemac` (Olm/Megolm). Primitives = RustCrypto / `*-dalek`. No manual implementation of the key-agreement handshake (Olm 3DH / X3DH-class), the ratchet, AEAD, or KDF.
 - **Validate every external public key on ingestion**: reject the zero point, low-order points, off-curve points. Never use a received key without validating it.
 - **Secrets**: wrapped types (`Zeroizing` / `secrecy`), **no derived `Clone` / `Debug` / `Display`** on them, fixed-size pre-allocated buffers, `mlock`, minimize holding them across `.await` points.
 - **PoW / Argon2 never on the async executor thread**: use `spawn_blocking` or a dedicated pool.
@@ -45,9 +45,10 @@ Cargo workspace, separate crates:
 The **daemon holds the secrets**; the **client never holds a private key in plaintext**.
 
 ## Roadmap (milestones)
-- **M0 — Foundations** <- *CURRENT*: workspace, crates, CI (fmt / clippy `-D warnings` / audit / deny), error handling, daemon+client skeleton, **secure** IPC socket, end-to-end `ping` command. **No real crypto or networking.**
-- **M1** — Identity & keystore (Ed25519/X25519 keys, handle `nick#fingerprint` base58 ~14 chars, Argon2id + ChaCha20-Poly1305, atomic writes, `init` / `unlock`).
-- **M2** — Local 1:1 encryption (mDNS + `vodozemac`, `send` / `inbox`, protobuf, key validation, version negotiation).
+- **M0 — Foundations** ✅: workspace, crates, CI (fmt / clippy `-D warnings` / audit / deny), error handling, daemon+client skeleton, **secure** IPC socket, end-to-end `ping` command. **No real crypto or networking.**
+- **M1 — Identity & keystore** ✅ (Ed25519/X25519 keys, handle `nick#fingerprint` base58 ~14 chars, Argon2id + ChaCha20-Poly1305, atomic writes, `init` / `unlock`).
+- **M2 — Encrypted sessions (crypto core)** <- *CURRENT*: Olm 3DH + Double Ratchet via `vodozemac`, identity-signed prekey bundles, strict key validation on ingestion, sealed ratchet-state store. Exercised **locally** (two identities exchanging bytes in-process) — **no network**.
+- **M2b — Local messaging**: mDNS discovery, `send` / `inbox`, protobuf wire format, authenticated version negotiation.
 - **M3** — TUI (`ratatui`, `chat`).
 - **M4** — DHT & discovery (Kademlia + prekeys + S/Kademlia hardening).
 - **M5** — NAT & relays (DCUtR / AutoNAT / Relay v2, capped opt-in relaying).

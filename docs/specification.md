@@ -21,7 +21,7 @@ This specification consolidates every decision made during the design phase. **S
 | **Identity** | Key pair (Ed25519). Free nickname + suffix = public-key fingerprint, Discord-style (`Alice#3f9a…`), compactly encoded (base58). No email, no password. |
 | **Local access** | A passphrase decrypts the local keystore (it is never sent anywhere). |
 | **Recovery** | No recovery by default (nothing to reveal under coercion); a recovery phrase as an explicit opt-in. |
-| **Encryption** | X3DH + Double Ratchet via **vodozemac** (audited). Forward secrecy + post-compromise recovery. Strict public-key validation. Crypto agility (PQXDH migration possible). |
+| **Encryption** | **Olm (triple-DH) + Double Ratchet** via **vodozemac** (audited). *Honest terminology*: Olm's handshake is not Signal's X3DH (no signed prekey inside the DH); an identity-signed prekey bundle — whose fallback key plays the signed-prekey **role** — provides the authentication (see `docs/sessions.md`). Forward secrecy + post-compromise recovery. Strict public-key validation. Crypto agility (PQ migration possible). |
 | **Network** | `rust-libp2p`: Kademlia DHT + mDNS + Rendezvous; NAT via hole punching + Circuit Relay v2. **Optional Tor transport (v1.x)** via Arti. |
 | **Discovery** | No global enumeration of users. Resolution of a known identity via the DHT; private groups via rendezvous. |
 | **Right to contact** | Contacts-only by default. **Sharing a group grants the right to whisper a member** (Minecraft `/whisper` style) — a **v2** capability (tied to groups), subject to anti-spam. |
@@ -56,7 +56,7 @@ A messenger where **privacy is structural, not an option**. No central server, n
 
 ### v1 (MVP)
 - Key-based identity + nickname/fingerprint.
-- Encrypted **1:1** conversations (X3DH + Double Ratchet).
+- Encrypted **1:1** conversations (Olm 3DH + Double Ratchet).
 - Peer discovery (DHT + mDNS), NAT traversal, peer relaying.
 - Offline delivery (encrypted store-and-forward via peers).
 - Passphrase → encrypted local keystore; no recovery by default.
@@ -68,7 +68,7 @@ A messenger where **privacy is structural, not an option**. No central server, n
 
 ### v2 and beyond
 - **Groups & channels** (Megolm/MLS), in-group admin.
-- **In-group whisper**: members of a shared group can message privately without being contacts (co-membership acts as an introduction). Still a **full 1:1 encrypted session** (X3DH + Double Ratchet); **configurable** (allow/deny DMs from co-members), in the anti-spam "tightenable" spirit.
+- **In-group whisper**: members of a shared group can message privately without being contacts (co-membership acts as an introduction). Still a **full 1:1 encrypted session** (Olm 3DH + Double Ratchet); **configurable** (allow/deny DMs from co-members), in the anti-spam "tightenable" spirit.
 - **Channel roles**: the admin restricts discussion rights (read-only vs read + write). Enforced via **signed messages + admin-signed channel policy** (see §14.4); holds against honest clients, not against a modified client.
 - **Metadata privacy**: onion routing, sealed sender, cover traffic.
 - **Advanced anti-coercion**: duress passphrase, plausible deniability, dead-man's switch.
@@ -97,7 +97,8 @@ A messenger where **privacy is structural, not an option**. No central server, n
 ## 5. Encryption
 
 ### 5.1 In transit (end-to-end)
-- **Protocol: X3DH + Double Ratchet**, via **vodozemac** (audited Rust implementation of Olm/Megolm).
+- **Protocol: Olm — a triple-DH (3DH) handshake + Double Ratchet — via vodozemac** (audited Rust implementation of Olm/Megolm).
+- **Honest terminology (M2)**: Olm's handshake is **not** Signal's X3DH — there is no signed prekey inside the DH computation. Prism compensates at the authentication layer: **one Ed25519 identity signature covers the entire published bundle** (identity key, fallback key, every one-time key), the reusable **fallback key plays the signed-prekey role** operationally (exhaustion fallback), and the **initiator proves its identity inside the encrypted channel** (a signed binding envelope carried by every pre-reply message). Full construction: `docs/sessions.md`.
 - **Asynchronous establishment**: the recipient publishes **signed prekey bundles** (on the DHT/rendezvous); the sender can start a session and send without the other being online.
 - **Forward secrecy**: each message has a unique ephemeral key; a compromised key does not expose the others.
 - **Post-compromise recovery**: the Diffie-Hellman ratchet reinjects randomness and locks out an attacker after a key theft.
@@ -335,8 +336,19 @@ Adversaries to consider explicitly (in/out of scope per version):
 13. **Optional Tor transport**: ✅ decided — **v1.x**, via Arti (`arti-client`). Onion-service hosting maturity to verify at implementation.
 14. **Network edge cases**: partitions, TCP/QUIC instability, **clock skew** — rule: never rest security-critical logic on synchronized wall-clocks; tolerate skew in TTLs (prekeys, difficulty records, retention, revocation).
 15. **Relay availability / incentives**: ✅ decided — **pure volunteering + non-monetary reciprocity** + easy relay hosting + designated mailbox (deliberately no paid/crypto model); accepted strategic risk.
-
-*Points 6, 7, 8, 11 and the license are implementation calibrations/choices, to be fixed during development — no longer blocking architecture decisions.*
+16. **M2 session decisions**: ✅ locked (2026-07-17, full construction in `docs/sessions.md`) —
+    **Olm 3DH via vodozemac 0.10, `SessionConfig::version_2`**; the M1 Ed25519 identity is the
+    **only signing root** (one signature over the whole canonical prekey bundle; vodozemac's
+    internal Ed25519 key is never published or trusted); initiator identity proven **inside**
+    the encrypted channel via a signed binding envelope (full channel binding, both parties'
+    identity + Curve25519 keys). **Default 20 one-time keys** per published bundle (tunable
+    constant; ~800-byte bundle keeps M4 DHT records under fragmentation thresholds); the
+    reusable **fallback key** covers exhaustion. Ratchet state persists in a **separate sealed
+    file `sessions.prs`** (versioned header, ChaCha20-Poly1305, atomic writes) keyed by
+    **HKDF-SHA512(identity seed, "prism v1 session-store key")** — no keystore format change,
+    no per-message Argon2. **Persist-before-transmit contract**: advanced ratchet state is
+    durably written *before* any ciphertext/plaintext output escapes (prevents message-key
+    reuse after a crash). No decrypted message content ever touches disk in M2.
 
 ---
 
