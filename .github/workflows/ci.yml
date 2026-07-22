@@ -45,15 +45,15 @@ jobs:
       - run: cargo test --workspace --all-targets
 
   msrv:
-    name: msrv (1.85.0)
+    name: msrv (1.88.0)
     runs-on: ubuntu-latest
     # RUSTUP_TOOLCHAIN takes precedence over rust-toolchain.toml, so this job
     # genuinely exercises the declared minimum supported Rust version.
     env:
-      RUSTUP_TOOLCHAIN: "1.85.0"
+      RUSTUP_TOOLCHAIN: "1.88.0"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --locked
 

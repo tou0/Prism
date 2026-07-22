@@ -5,6 +5,24 @@
 [advisories]
 version = 2
 yanked = "deny"
+# Documented, reversible risk-acceptances for TRANSITIVE advisories with no
+# in-semver fix (libp2p-mdns 0.48 hard-pins hickory-proto 0.25.2, and `paste`
+# is unmaintained but has no replacement). Re-audit and drop these when libp2p
+# bumps its hickory dependency upstream. Rationale in docs/net.md §Supply chain.
+# PENDING MAINTAINER RATIFICATION.
+ignore = [
+    # hickory-proto NSEC3/DNSSEC unbounded loop. Unreachable here: libp2p-mdns
+    # pulls hickory-proto with default-features=false, features=["mdns"] — the
+    # DNSSEC/NSEC3 resolver path is not compiled or exercised by mDNS.
+    "RUSTSEC-2026-0118",
+    # hickory-proto O(n^2) name compression on message ENCODING. CPU-only DoS,
+    # LAN-scoped (M2b is local mDNS, no DHT/global exposure), confined to the
+    # swarm task; no in-semver fix available. Tracked for the libp2p bump.
+    "RUSTSEC-2026-0119",
+    # `paste` proc-macro unmaintained (compile-time only, no runtime surface,
+    # no maintained drop-in replacement; pulled transitively).
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2

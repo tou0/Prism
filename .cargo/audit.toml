@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# cargo-audit configuration (read by `cargo audit` and the CI audit-check job).
+# Mirrors the ignore list in deny.toml — see that file and docs/net.md for the
+# full rationale. These are TRANSITIVE advisories with no in-semver fix
+# (libp2p-mdns 0.48 pins hickory-proto 0.25.2). PENDING MAINTAINER RATIFICATION.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0118", # hickory NSEC3/DNSSEC loop — unreachable via mDNS feature
+    "RUSTSEC-2026-0119", # hickory O(n^2) encode — CPU DoS, LAN-scoped, no fix yet
+    "RUSTSEC-2024-0436", # paste unmaintained — compile-time only, no replacement
+]

@@ -47,8 +47,8 @@ The **daemon holds the secrets**; the **client never holds a private key in plai
 ## Roadmap (milestones)
 - **M0 — Foundations** ✅: workspace, crates, CI (fmt / clippy `-D warnings` / audit / deny), error handling, daemon+client skeleton, **secure** IPC socket, end-to-end `ping` command. **No real crypto or networking.**
 - **M1 — Identity & keystore** ✅ (Ed25519/X25519 keys, handle `nick#fingerprint` base58 ~14 chars, Argon2id + ChaCha20-Poly1305, atomic writes, `init` / `unlock`).
-- **M2 — Encrypted sessions (crypto core)** <- *CURRENT*: Olm 3DH + Double Ratchet via `vodozemac`, identity-signed prekey bundles, strict key validation on ingestion, sealed ratchet-state store. Exercised **locally** (two identities exchanging bytes in-process) — **no network**.
-- **M2b — Local messaging**: mDNS discovery, `send` / `inbox`, protobuf wire format, authenticated version negotiation.
+- **M2 — Encrypted sessions (crypto core)** ✅: Olm 3DH + Double Ratchet via `vodozemac`, identity-signed prekey bundles, strict key validation on ingestion, sealed ratchet-state store. Exercised **locally** (two identities exchanging bytes in-process) — **no network**.
+- **M2b — Local networked messaging** <- *CURRENT*: mDNS discovery + TCP/Noise/Yamux via `rust-libp2p`, `send` / `inbox` / `peers` / `status`, `PeerId` bound to the Ed25519 identity, two-layer identity check, persist-before-transmit preserved over the network. Synchronous delivery only (no offline queue). CBOR request/response carries the opaque M2 wire bytes; protocol version via multistream-select inside Noise. (Protobuf network wire format and richer authenticated version negotiation deferred to a later networking milestone.)
 - **M3** — TUI (`ratatui`, `chat`).
 - **M4** — DHT & discovery (Kademlia + prekeys + S/Kademlia hardening).
 - **M5** — NAT & relays (DCUtR / AutoNAT / Relay v2, capped opt-in relaying).

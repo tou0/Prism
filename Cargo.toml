@@ -6,9 +6,11 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# Real floor: a resolved dependency (clap_lex) requires edition2024, stabilized
-# in Rust 1.85. Verified in CI by the `msrv` job below.
-rust-version = "1.85"
+# Real floor: libp2p 0.56's transitive deps set this. `base45` (via
+# multiaddr → multibase) uses `slice_as_chunks`, stabilized in Rust 1.88;
+# `icu_*` (via url → idna) require 1.86. Was 1.85 through M2 (clap_lex's
+# edition2024); the M2b networking stack raised it. Verified in CI by `msrv`.
+rust-version = "1.88"
 publish = false
 license = "AGPL-3.0-or-later"
 authors = ["The Prism contributors"]

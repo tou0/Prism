@@ -9,16 +9,16 @@ does **not** promise "100% secure" or "untraceable" — it maximizes protection
 and communicates its limits honestly. See [`docs/specification.md`](docs/specification.md)
 for the full design.
 
-> **Status: milestone M2 (Encrypted sessions — crypto core).** On top of the
-> M1 identities (Ed25519 `nick#fingerprint` handles, sealed Argon2id +
-> ChaCha20-Poly1305 keystore, opt-in BIP-39 recovery), Prism now has complete
-> encrypted 1:1 sessions: Olm 3DH establishment + Double Ratchet via the
-> audited `vodozemac`, identity-signed prekey bundles, strict public-key
-> validation on ingestion, and a sealed ratchet-state store with a
-> persist-before-transmit crash-safety contract (`docs/sessions.md`).
-> Sessions are exercised **locally** (see
-> `cargo run -p prism-core --example local_chat`) — **there is no networking
-> yet**; mDNS discovery and `send`/`inbox` arrive with M2b.
+> **Status: milestone M2b (Local networked messaging).** Two `prismd`
+> instances on the same LAN now **discover each other via mDNS and exchange
+> real end-to-end-encrypted messages** — the M2 crypto core (Olm 3DH + Double
+> Ratchet via `vodozemac`, identity-signed prekey bundles, strict key
+> validation) carried over libp2p (TCP + Noise + Yamux). The libp2p `PeerId`
+> is the M1 Ed25519 identity, and delivery enforces a two-layer identity check
+> and the persist-before-transmit contract (`docs/net.md`). Delivery is
+> **synchronous only** — both peers must be online; nothing is queued. **No
+> DHT, NAT traversal, relays, offline delivery, or TUI yet** — those are later
+> milestones.
 
 ## Workspace layout
 
@@ -26,7 +26,7 @@ for the full design.
 |---|---|
 | `prism-core` | Core types, identity, encrypted sessions (vodozemac), keystore, ratchet store (no network/UI deps). |
 | `prism-proto` | IPC message types and the framed serde codec. |
-| `prism-net` | libp2p networking layer (placeholder until M2b). |
+| `prism-net` | libp2p networking layer: mDNS discovery + Noise request/response (opaque bytes only; no crypto). |
 | `prism-daemon` | Background daemon `prismd`: holds keys, runs the network, exposes the IPC socket. |
 | `prism-cli` | Thin client `prism`: talks to the daemon over IPC. |
 
@@ -61,11 +61,15 @@ cargo run --bin prismd
 In another:
 
 ```sh
-cargo run --bin prism -- ping     # liveness check -> pong
-cargo run --bin prism -- init     # create an identity (interactive)
-cargo run --bin prism -- whoami   # show the unlocked identity
-cargo run --bin prism -- unlock   # unlock after a daemon restart
-cargo run --bin prism -- restore  # recreate an identity from a recovery phrase
+cargo run --bin prism -- ping             # liveness check -> pong
+cargo run --bin prism -- init             # create an identity (interactive)
+cargo run --bin prism -- whoami           # show the unlocked identity
+cargo run --bin prism -- unlock           # unlock after a daemon restart
+cargo run --bin prism -- restore          # recreate an identity from a recovery phrase
+cargo run --bin prism -- status           # network + identity status
+cargo run --bin prism -- peers            # peers discovered on the LAN
+cargo run --bin prism -- send <handle> "hi"  # send an encrypted message
+cargo run --bin prism -- inbox            # show and drain received messages
 ```
 
 `init` asks for a nickname, a passphrase, and whether to generate an optional
@@ -74,8 +78,14 @@ your identity; without it, a lost passphrase means a lost identity, which is
 the point). `init`/`restore` refuse to overwrite an existing keystore unless
 `--force` is given.
 
+To message: run two unlocked daemons on the same LAN; each sees the other under
+`peers`, then `send <nick#fingerprint> "..."` delivers an end-to-end-encrypted
+message that appears in the recipient's `inbox`. Both peers must be online —
+delivery is synchronous and nothing is queued (offline delivery is a later
+milestone). See [`docs/net.md`](docs/net.md).
+
 Both binaries accept `--socket <PATH>`; the daemon also accepts
-`--keystore <PATH>`.
+`--keystore <PATH>`, `--sessions <PATH>`, and `--listen <MULTIADDR>`.
 
 ## License
 
