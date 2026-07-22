@@ -14,3 +14,24 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+prism-core.workspace = true
+libp2p = { version = "0.56", default-features = false, features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "mdns",
+    "request-response",
+    "cbor",
+    "macros",
+] }
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+libp2p-swarm-test = "0.6"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

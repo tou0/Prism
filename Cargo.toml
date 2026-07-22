@@ -47,6 +47,11 @@ vodozemac = { version = "0.10", default-features = false }
 # Dev-only: property-based tests (spec §15).
 proptest = "1"
 
+# M2b — local networked messaging. libp2p is confined to prism-net (the daemon
+# stays libp2p-free); futures drives swarm polling and the request-response codec.
+libp2p = { version = "0.56", default-features = false }
+futures = "0.3"
+
 # M1 — identity & keystore crypto (docs/specification.md §4-5, docs/keystore.md).
 # Audited RustCrypto / dalek primitives only; never hand-rolled crypto.
 argon2 = "0.5"
