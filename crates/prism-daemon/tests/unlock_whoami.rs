@@ -24,7 +24,11 @@ const PASSPHRASE: &str = "correct horse battery staple";
 async fn start(dir: &tempfile::TempDir) -> UnixStream {
     let socket = dir.path().join("run").join("prismd.sock");
     let listener = bind_secure(&socket).expect("bind secure socket");
-    let state = Arc::new(AppState::new(dir.path().join("keystore.pks")));
+    let state = Arc::new(AppState::new(
+        dir.path().join("keystore.pks"),
+        dir.path().join("sessions.prs"),
+        "/ip4/127.0.0.1/tcp/0".to_owned(),
+    ));
     tokio::spawn(serve(listener, state));
     UnixStream::connect(&socket).await.expect("connect")
 }

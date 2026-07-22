@@ -9,7 +9,9 @@
 //! The binary entry point lives in `main.rs`; the socket and server logic live
 //! here so they can be driven directly by tests.
 
+pub mod networking;
 pub mod server;
+pub mod session_core;
 pub mod socket;
 pub mod state;
 
@@ -17,7 +19,7 @@ use std::path::PathBuf;
 
 pub use server::serve;
 pub use socket::{bind_secure, SocketGuard};
-pub use state::{AppState, UnlockedIdentity};
+pub use state::{AppState, NetworkHandles, UnlockedIdentity};
 
 /// Errors produced by the daemon.
 #[derive(Debug, thiserror::Error)]

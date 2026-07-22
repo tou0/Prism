@@ -24,6 +24,7 @@ path = "src/main.rs"
 [dependencies]
 prism-core.workspace = true
 prism-proto.workspace = true
+prism-net.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync"] }
 thiserror.workspace = true
 anyhow.workspace = true
@@ -31,6 +32,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 rustix.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

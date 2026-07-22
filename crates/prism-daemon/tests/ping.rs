@@ -13,7 +13,11 @@ use tokio::net::UnixStream;
 /// State pointing at a keystore path that does not exist: fine for tests that
 /// never touch identity requests.
 fn test_state(dir: &tempfile::TempDir) -> Arc<AppState> {
-    Arc::new(AppState::new(dir.path().join("keystore.pks")))
+    Arc::new(AppState::new(
+        dir.path().join("keystore.pks"),
+        dir.path().join("sessions.prs"),
+        "/ip4/127.0.0.1/tcp/0".to_owned(),
+    ))
 }
 
 #[tokio::test]

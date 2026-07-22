@@ -274,6 +274,18 @@ impl SessionManager {
         self.find(&session.0).map(|s| &s.peer)
     }
 
+    /// Find an established session with `peer`, if any — so a caller can decide
+    /// between encrypting on it and establishing a new one. Returns the first
+    /// match; in the normal single-initiator flow both sides share one session
+    /// id, so there is exactly one (simultaneous mutual initiation, i.e. glare,
+    /// is out of scope for M2b).
+    pub fn find_session(&self, peer: &PublicIdentity) -> Option<SessionId> {
+        self.sessions
+            .iter()
+            .find(|s| &s.peer == peer)
+            .map(|s| SessionId(s.session_id.clone()))
+    }
+
     /// Generate `count` fresh one-time keys (plus the fallback key on first
     /// use), sign the bundle with the identity, mark the keys as published,
     /// persist, and return the wire bundle.

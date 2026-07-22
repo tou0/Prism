@@ -17,7 +17,9 @@ mod message;
 mod sensitive;
 
 pub use frame::{read_message, read_message_opt, write_message, MAX_FRAME_LEN};
-pub use message::{Envelope, RecoveryMode, Request, Response, PROTOCOL_VERSION};
+pub use message::{
+    Envelope, InboxItem, PeerInfo, RecoveryMode, Request, Response, PROTOCOL_VERSION,
+};
 pub use sensitive::Sensitive;
 
 /// Errors produced while (de)serializing or framing IPC messages.

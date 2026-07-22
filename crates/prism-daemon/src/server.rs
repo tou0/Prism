@@ -99,6 +99,23 @@ async fn dispatch(state: &AppState, envelope: Envelope<Request>) -> Response {
         } => handle_restore(state, nick, passphrase, Some(mnemonic), force).await,
         Request::Unlock { passphrase } => handle_unlock(state, passphrase).await,
         Request::Whoami => handle_whoami(state).await,
+        Request::Send { to, body } => crate::networking::handle_send(state, to, body).await,
+        Request::Inbox => crate::networking::handle_inbox(state).await,
+        Request::Peers => crate::networking::handle_peers(state).await,
+        Request::Status => crate::networking::handle_status(state).await,
+    }
+}
+
+/// After a successful unlock/init, bring the networking subsystem up bound to
+/// the now-unlocked identity. A bring-up failure leaves the daemon unlocked
+/// but offline (logged, not fatal): the identity operation itself succeeded.
+async fn bring_up_networking(state: &AppState) {
+    let seed = match state.unlocked.read().await.as_ref() {
+        Some(identity) => identity.seed(),
+        None => return,
+    };
+    if let Err(e) = crate::networking::ensure_up(state, seed).await {
+        warn!(error = %e, "networking failed to start; the daemon is unlocked but offline");
     }
 }
 
@@ -154,7 +171,7 @@ async fn handle_init(
     })
     .await;
 
-    match result {
+    let response = match result {
         Ok(Ok((keypair, mnemonic))) => {
             let identity = UnlockedIdentity::new(keypair, nick);
             let response = Response::Created {
@@ -167,7 +184,12 @@ async fn handle_init(
         }
         Ok(Err(response)) => response,
         Err(join) => join_error(join),
+    };
+    drop(unlocked); // release before networking bring-up reads it
+    if matches!(response, Response::Created { .. }) {
+        bring_up_networking(state).await;
     }
+    response
 }
 
 /// `Restore`: like `Init`, but the seed is derived from the given recovery
@@ -202,7 +224,7 @@ async fn handle_restore(
     })
     .await;
 
-    match result {
+    let response = match result {
         Ok(Ok(keypair)) => {
             let identity = UnlockedIdentity::new(keypair, nick);
             let response = Response::Created {
@@ -216,7 +238,12 @@ async fn handle_restore(
         }
         Ok(Err(response)) => response,
         Err(join) => join_error(join),
+    };
+    drop(unlocked); // release before networking bring-up reads it
+    if matches!(response, Response::Created { .. }) {
+        bring_up_networking(state).await;
     }
+    response
 }
 
 /// `Unlock`: decrypt the keystore and load the identity into RAM. Always
@@ -231,7 +258,7 @@ async fn handle_unlock(state: &AppState, passphrase: Sensitive) -> Response {
     })
     .await;
 
-    match result {
+    let response = match result {
         Ok(Ok(contents)) => {
             let keypair = IdentityKeypair::from_seed(contents.seed());
             let identity = UnlockedIdentity::new(keypair, contents.nick().to_owned());
@@ -244,7 +271,12 @@ async fn handle_unlock(state: &AppState, passphrase: Sensitive) -> Response {
         }
         Ok(Err(response)) => response,
         Err(join) => join_error(join),
+    };
+    drop(unlocked); // release before networking bring-up reads it
+    if matches!(response, Response::Identity { .. }) {
+        bring_up_networking(state).await;
     }
+    response
 }
 
 /// `Whoami`: report the unlocked identity, or `Locked`.
@@ -263,7 +295,11 @@ mod tests {
     use super::*;
 
     fn test_state() -> AppState {
-        AppState::new(std::path::PathBuf::from("/nonexistent/test/keystore.pks"))
+        AppState::new(
+            std::path::PathBuf::from("/nonexistent/test/keystore.pks"),
+            std::path::PathBuf::from("/nonexistent/test/sessions.prs"),
+            "/ip4/127.0.0.1/tcp/0".to_owned(),
+        )
     }
 
     #[tokio::test]

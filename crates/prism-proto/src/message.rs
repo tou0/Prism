@@ -63,6 +63,21 @@ pub enum Request {
     /// Ask who is currently unlocked. Expects [`Response::Identity`] or
     /// [`Response::Locked`].
     Whoami,
+    /// Send an encrypted message to a contact on the local network. Expects
+    /// [`Response::Sent`], [`Response::NotReachable`], or [`Response::Error`].
+    Send {
+        /// The recipient's handle, `nick#fingerprint`.
+        to: String,
+        /// The message plaintext. Wrapped so it is redacted in `Debug`,
+        /// zeroized, and never logged; it travels only over the local socket.
+        body: Sensitive,
+    },
+    /// Drain the in-RAM inbox of received messages. Expects [`Response::Inbox`].
+    Inbox,
+    /// List peers discovered on the local network. Expects [`Response::Peers`].
+    Peers,
+    /// Network and identity status. Expects [`Response::Status`].
+    Status,
 }
 
 /// A response sent by the daemon to the client.
@@ -92,11 +107,60 @@ pub enum Response {
     },
     /// No identity is unlocked (locked keystore, or none exists yet).
     Locked,
+    /// A message was encrypted, persisted, and delivered to the peer.
+    Sent,
+    /// The recipient is not currently reachable on the local network; nothing
+    /// was queued (offline store-and-forward is a later milestone).
+    NotReachable {
+        /// The handle that could not be reached.
+        handle: String,
+    },
+    /// The drained inbox contents.
+    Inbox {
+        /// Received messages, oldest first.
+        messages: Vec<InboxItem>,
+    },
+    /// Discovered peers on the local network.
+    Peers {
+        /// One entry per discovered peer.
+        peers: Vec<PeerInfo>,
+    },
+    /// Network and identity status.
+    Status {
+        /// Our handle, `nick#fingerprint`.
+        handle: String,
+        /// Our libp2p peer id (base58).
+        peer_id: String,
+        /// Our bound listen addresses.
+        listen_addrs: Vec<String>,
+        /// Number of currently discovered peers.
+        peer_count: usize,
+    },
     /// The request could not be served; carries a human-readable reason.
     Error {
         /// Human-readable error message (never contains secrets).
         message: String,
     },
+}
+
+/// One received message in the inbox.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InboxItem {
+    /// The sender's full fingerprint (base58), cryptographically verified.
+    pub from_fingerprint: String,
+    /// The decrypted message body (redacted in `Debug`, zeroized on drop).
+    pub body: Sensitive,
+}
+
+/// One discovered peer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    /// The peer's full identity fingerprint (base58), derived from its key.
+    pub fingerprint: String,
+    /// The peer's libp2p peer id (base58).
+    pub peer_id: String,
+    /// Whether a connection is currently open.
+    pub connected: bool,
 }
 
 /// Transport envelope wrapping every IPC message with a protocol version.

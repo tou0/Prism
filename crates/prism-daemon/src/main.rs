@@ -23,6 +23,12 @@ struct Args {
     /// Path to the encrypted keystore (defaults to the per-user data directory).
     #[arg(long)]
     keystore: Option<PathBuf>,
+    /// Path to the sealed ratchet-state store (defaults next to the keystore).
+    #[arg(long)]
+    sessions: Option<PathBuf>,
+    /// Multiaddr the swarm listens on for LAN peers.
+    #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")]
+    listen: String,
 }
 
 fn main() -> Result<()> {
@@ -55,11 +61,19 @@ async fn run(args: Args) -> Result<()> {
         }
     };
 
+    // The ratchet store sits next to the keystore by default.
+    let sessions_path = args.sessions.unwrap_or_else(|| {
+        keystore_path
+            .parent()
+            .map(|dir| dir.join("sessions.prs"))
+            .unwrap_or_else(|| PathBuf::from("sessions.prs"))
+    });
+
     let listener = bind_secure(&socket_path)
         .with_context(|| format!("binding IPC socket at {}", socket_path.display()))?;
     // Unlink the socket file on shutdown.
     let _guard = SocketGuard::new(socket_path.clone());
-    let state = Arc::new(AppState::new(keystore_path));
+    let state = Arc::new(AppState::new(keystore_path, sessions_path, args.listen));
     info!(socket = %socket_path.display(), "prismd is listening");
 
     tokio::select! {
