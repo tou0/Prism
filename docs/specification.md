@@ -312,7 +312,7 @@ Adversaries to consider explicitly (in/out of scope per version):
 - **Crypto**: `vodozemac` (protocol); `ed25519-dalek`, `x25519-dalek`, `chacha20poly1305`, `hkdf` (complementary primitives); `argon2` (Argon2id); `blake3`/`sha2`; `zeroize` (+ `secrecy`).
 - **TUI / CLI**: `ratatui`, `crossterm`, `clap`.
 - **Daemon↔client IPC**: Unix socket / named pipe, `serde`.
-- **Wire format**: `prost` (protobuf).
+- **Wire format**: `prost` (protobuf) is the intended long-term peer message wire format. *M2b nuance (implemented):* the local networked-messaging transport carries the **opaque** session bytes (produced/validated only by `prism-core`) over libp2p's audited **CBOR** request/response codec; a `prost` schema for peer messages and richer authenticated version negotiation land in a later networking milestone. See `docs/net.md`.
 - **Storage**: `rusqlite` (+ SQLCipher), `directories`.
 - **Release signing**: minisign/signify or Sigstore/cosign.
 - **Assurance**: `cargo-audit`, `cargo-deny`, `proptest`, `cargo-fuzz`, reproducible builds.
@@ -323,7 +323,7 @@ Adversaries to consider explicitly (in/out of scope per version):
 
 1. **Name**: ✅ **Prism** (NSA-surveillance caveat accepted). **License**: ✅ **AGPL-3.0-or-later** (copyleft with network clause — the legal embodiment of the anti-capture invariant). Functional obligations to implement later (**not M0**): §13 source-offer to network peers (e.g. `prism --source` → repo + exact commit), §6(e) peer notice on P2P self-distribution, and "Appropriate Legal Notices" in the interactive UI (`prism license` / startup notice).
 2. **Fingerprint length**: ✅ ~14 base58 characters (~82 bits) + SAS.
-3. **Wire format**: ✅ **protobuf** (`prost`).
+3. **Wire format**: ✅ **protobuf** (`prost`) as the long-term peer message format. M2b carries the opaque session bytes over libp2p's **CBOR** request/response codec (payloads stay opaque either way); the `prost` schema + richer version negotiation are deferred to a later networking milestone (§17, `docs/net.md`).
 4. **Offline relays**: ✅ 2–3 relays, reliability score + designated mailbox, configurable TTL (short default, 1-month ceiling), deletion on delivery, Hashcash.
 5. **Proof-of-work calibration**: ✅ context-based scale + recipient-verified adaptivity + memory-hard PoW; concrete difficulty levels still to set.
 6. **Argon2id parameters**: ✅ **fixed defaults on write** (not user-configurable), but **carried in the keystore header and read back per file** — so difficulty can be raised later without a format-version bump or migrating old keystores (crypto agility, §14.1 / §5.2; full layout in `docs/keystore.md`). Calibrated M1 defaults: `m = 64 MiB, t = 8, p = 1`. Keystore = a single encrypted file whose on-disk format MUST be **indistinguishable between recovery modes** (no field reveals whether a BIP-39 recovery phrase exists — otherwise device seizure would betray that a phrase is extractable, defeating the at-risk case); the KDF params are identical across modes, so files stay byte-structurally identical.

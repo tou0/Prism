@@ -2,7 +2,9 @@
 # cargo-audit configuration (read by `cargo audit` and the CI audit-check job).
 # Mirrors the ignore list in deny.toml — see that file and docs/net.md for the
 # full rationale. These are TRANSITIVE advisories with no in-semver fix
-# (libp2p-mdns 0.48 pins hickory-proto 0.25.2). PENDING MAINTAINER RATIFICATION.
+# (libp2p-mdns 0.48 pins hickory-proto 0.25.2). Ratified 2026-07-22 for M2b's
+# LOCAL perimeter only. ==> M4 BLOCKER: re-open before the DHT exposes the node
+# globally (a LAN-only DoS becomes internet-wide there).
 [advisories]
 ignore = [
     "RUSTSEC-2026-0118", # hickory NSEC3/DNSSEC loop — unreachable via mDNS feature

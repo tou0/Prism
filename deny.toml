@@ -7,9 +7,11 @@ version = 2
 yanked = "deny"
 # Documented, reversible risk-acceptances for TRANSITIVE advisories with no
 # in-semver fix (libp2p-mdns 0.48 hard-pins hickory-proto 0.25.2, and `paste`
-# is unmaintained but has no replacement). Re-audit and drop these when libp2p
-# bumps its hickory dependency upstream. Rationale in docs/net.md §Supply chain.
-# PENDING MAINTAINER RATIFICATION.
+# is unmaintained but has no replacement). Rationale in docs/net.md §Supply chain.
+# Ratified 2026-07-22 for M2b's LOCAL perimeter only.
+# ==> M4 BLOCKER: these MUST be re-opened before the DHT (M4) exposes the node
+#     globally — a LAN-only DoS becomes internet-wide there. Drop/resolve when
+#     libp2p bumps hickory upstream.
 ignore = [
     # hickory-proto NSEC3/DNSSEC unbounded loop. Unreachable here: libp2p-mdns
     # pulls hickory-proto with default-features=false, features=["mdns"] — the

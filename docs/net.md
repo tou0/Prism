@@ -130,6 +130,13 @@ by libp2p 0.56's transitive dependencies: `base45` (via `multiaddr` →
 
 ## Supply chain (documented risk-acceptances — PENDING RATIFICATION)
 
+> **M4 BLOCKER (ratified 2026-07-22).** The advisory ignores below are accepted
+> **only** for M2b's local perimeter. A LAN-only DoS becomes internet-wide the
+> moment M4's DHT exposes the node globally, so **these ignores MUST be
+> re-opened and resolved before M4 ships** (upgrade hickory once libp2p bumps
+> it, or otherwise mitigate). Do not carry them past the local-network
+> milestone unchanged.
+
 libp2p 0.56's `libp2p-mdns 0.48` hard-pins `hickory-proto 0.25.2`, for which
 two advisories exist with **no in-semver fix** (upgrading needs an upstream
 libp2p bump). They are ignored, with rationale, in `deny.toml` and
