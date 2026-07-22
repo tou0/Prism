@@ -34,3 +34,12 @@ pub const RESTORED_HEADER: &str = "Identity restored and unlocked.";
 pub const UNLOCKED_HEADER: &str = "Keystore unlocked.";
 pub const LOCKED: &str = "Locked: no identity is unlocked (run `prism unlock`, or `prism init`).";
 pub const PONG: &str = "pong";
+
+pub const SENT: &str = "sent";
+pub const INBOX_EMPTY: &str = "(no messages)";
+pub const NO_PEERS: &str = "(no peers discovered on the local network yet)";
+
+/// The recipient is offline; nothing was queued (synchronous delivery only).
+pub fn not_reachable(handle: &str) -> String {
+    format!("{handle} is not reachable on the local network; nothing was queued")
+}

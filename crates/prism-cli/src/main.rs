@@ -48,6 +48,19 @@ enum Command {
     Unlock,
     /// Show the currently unlocked identity.
     Whoami,
+    /// Send an encrypted message to a contact on the local network.
+    Send {
+        /// The recipient's handle, `nick#fingerprint`.
+        to: String,
+        /// The message text.
+        message: String,
+    },
+    /// Show and drain received messages.
+    Inbox,
+    /// List peers discovered on the local network.
+    Peers,
+    /// Show network and identity status.
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -77,5 +90,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Restore { force } => commands::restore(&socket_path, force).await,
         Command::Unlock => commands::unlock(&socket_path).await,
         Command::Whoami => commands::whoami(&socket_path).await,
+        Command::Send { to, message } => commands::send(&socket_path, to, message).await,
+        Command::Inbox => commands::inbox(&socket_path).await,
+        Command::Peers => commands::peers(&socket_path).await,
+        Command::Status => commands::status(&socket_path).await,
     }
 }
