@@ -58,6 +58,11 @@ pub const TUI_INPUT_HINT: &str = "type a message…";
 pub const TUI_YOU: &str = "you";
 pub const TUI_MODE_NORMAL: &str = "NORMAL";
 pub const TUI_MODE_INSERT: &str = "INSERT";
+// Connection state — deliberately neutral. `connected` means an open
+// connection exists right now, NOT reachability (a reachable peer idle for
+// >60s shows "not connected"). We do not claim reachability we can't prove.
+pub const TUI_STAT_CONNECTED: &str = "connected";
+pub const TUI_STAT_SEEN: &str = "seen";
 pub const TUI_CONNECTING: &str = "connecting to the daemon…";
 pub const TUI_TOO_SMALL: &str = "terminal too small";
 

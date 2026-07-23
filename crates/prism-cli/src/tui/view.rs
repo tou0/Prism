@@ -151,6 +151,8 @@ fn render_title(frame: &mut Frame, state: &AppState, area: Rect) {
                 .add_modifier(Modifier::REVERSED),
         ),
     };
+    let connected = state.peers.iter().filter(|p| p.connected).count();
+    let total = state.peers.len();
     let line = Line::from(vec![
         Span::styled(
             format!(" {} ", text::TUI_TITLE),
@@ -159,9 +161,10 @@ fn render_title(frame: &mut Frame, state: &AppState, area: Rect) {
         Span::raw(handle.to_owned()),
         Span::raw("  "),
         Span::styled(
-            format!("● {} peers", state.status.peer_count),
+            format!("● {connected} {}", text::TUI_STAT_CONNECTED),
             Style::default().fg(Color::Green),
         ),
+        Span::styled(format!(" · {total} {}", text::TUI_STAT_SEEN), dim_style()),
         Span::raw("  "),
         mode,
     ]);
@@ -244,13 +247,32 @@ fn render_peers(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .enumerate()
         .map(|(i, peer)| {
             let selected = focused && state.selected_peer == i;
-            let color = peer_color(&peer.fingerprint);
-            let marker = if peer.connected { "● " } else { "○ " };
             let label = truncate(
                 AppState::short_fingerprint(&peer.fingerprint),
                 width.saturating_sub(2),
             );
-            selectable_line(marker, &label, color, selected)
+            // Connected: green dot + the peer's colour. Not connected: a hollow
+            // dot, dimmed — an honest "no open connection right now" (which is
+            // NOT the same as unreachable; see docs/net.md).
+            let (marker, mut marker_style, mut label_style) = if peer.connected {
+                (
+                    "● ",
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(peer_color(&peer.fingerprint)),
+                )
+            } else {
+                ("○ ", dim_style(), dim_style())
+            };
+            if selected {
+                marker_style = marker_style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+                label_style = label_style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+            }
+            let gutter = if selected { "▌" } else { " " };
+            Line::from(vec![
+                Span::styled(gutter.to_owned(), Style::default().fg(ACCENT)),
+                Span::styled(marker.to_owned(), marker_style),
+                Span::styled(label, label_style),
+            ])
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
@@ -268,7 +290,15 @@ fn render_net(frame: &mut Frame, state: &AppState, area: Rect) {
     frame.render_widget(block, area);
 
     let width = inner.width as usize;
-    let mut lines = vec![Line::from(format!("peers: {}", state.status.peer_count))];
+    let connected = state.peers.iter().filter(|p| p.connected).count();
+    let total = state.peers.len();
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("{}: {connected}", text::TUI_STAT_CONNECTED),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(format!(" · {}: {total}", text::TUI_STAT_SEEN), dim_style()),
+    ])];
     if !state.status.peer_id.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("id ", dim_style()),
@@ -286,19 +316,32 @@ fn render_messages(frame: &mut Frame, state: &AppState, area: Rect) {
     let focused = matches!(state.focus, Focus::Messages);
     let title = match state.current_conversation() {
         Some(conv) => {
-            let short = AppState::short_fingerprint(&conv.fingerprint);
-            let dot = "● ";
-            format!("{dot}{short}")
+            let short = AppState::short_fingerprint(&conv.fingerprint).to_owned();
+            // Dot reflects the peer's current connection state (honest: an open
+            // connection now, not a reachability claim).
+            let connected = state
+                .peers
+                .iter()
+                .any(|p| p.fingerprint == conv.fingerprint && p.connected);
+            let (dot, dot_style) = if connected {
+                ("● ", Style::default().fg(Color::Green))
+            } else {
+                ("○ ", dim_style())
+            };
+            Line::from(vec![
+                Span::styled(dot, dot_style),
+                Span::styled(short, Style::default().add_modifier(Modifier::BOLD)),
+            ])
         }
-        None => text::TUI_NO_CONVERSATION_SELECTED.to_owned(),
+        None => Line::from(Span::styled(
+            text::TUI_NO_CONVERSATION_SELECTED,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style(focused))
-        .title(Span::styled(
-            title,
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

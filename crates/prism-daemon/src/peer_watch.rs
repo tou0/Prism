@@ -6,8 +6,15 @@
 //! onto the push broadcast. The TUI takes its initial peer list from an explicit
 //! `Peers` request and then keeps it current from these events; the reducer
 //! treats discovery idempotently, so the snapshot/event overlap is harmless.
+//!
+//! It diffs the **`connected` flag**, not just presence: a peer whose
+//! connection drops (e.g. its daemon is killed) is re-emitted as a
+//! `PeerDiscovered` upsert with `connected = false`, so the UI reflects the
+//! change within one poll instead of showing a stale "connected". Note that
+//! `connected` tracks *an open connection*, not reachability — see the
+//! "Known limitations" note in `docs/net.md`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use prism_core::PublicIdentity;
@@ -36,8 +43,8 @@ pub fn spawn_peer_watch(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(POLL_INTERVAL);
-        // Fingerprints seen in the previous snapshot.
-        let mut known: HashSet<String> = HashSet::new();
+        // The previous snapshot: fingerprint -> was it connected?
+        let mut known: HashMap<String, bool> = HashMap::new();
 
         loop {
             ticker.tick().await;
@@ -67,22 +74,117 @@ pub fn spawn_peer_watch(
                 })
                 .collect();
 
-            let current_set: HashSet<String> = current.keys().cloned().collect();
-
-            // Newly appeared peers. `send` errors only when nobody is
-            // subscribed, which is fine to ignore — the next subscriber fetches
-            // a fresh snapshot via a `Peers` request.
-            for fingerprint in current_set.difference(&known) {
-                if let Some(peer) = current.get(fingerprint) {
-                    let _ = events.send(DaemonEvent::PeerDiscovered(peer.clone()));
-                }
-            }
-            // Peers that disappeared.
-            for fingerprint in known.difference(&current_set) {
-                let _ = events.send(DaemonEvent::PeerLost(fingerprint.clone()));
+            // `send` errors only when nobody is subscribed, which is fine to
+            // ignore — the next subscriber fetches a fresh snapshot via `Peers`.
+            for event in compute_peer_events(&known, &current) {
+                let _ = events.send(event);
             }
 
-            known = current_set;
+            known = current
+                .iter()
+                .map(|(fingerprint, peer)| (fingerprint.clone(), peer.connected))
+                .collect();
         }
     })
+}
+
+/// Diff the previous snapshot (`fingerprint -> connected`) against the current
+/// peers, producing the push events to emit:
+///
+/// - a fingerprint not seen before → `PeerDiscovered`;
+/// - a fingerprint whose `connected` flag changed → `PeerDiscovered` again (an
+///   upsert the TUI merges in place — this is how a dropped connection greys a
+///   peer within one poll);
+/// - a fingerprint gone from the current set → `PeerLost`.
+///
+/// Pure and side-effect-free, so the diff logic is unit-testable without a
+/// live swarm.
+fn compute_peer_events(
+    prev: &HashMap<String, bool>,
+    current: &HashMap<String, PeerInfo>,
+) -> Vec<DaemonEvent> {
+    let mut events = Vec::new();
+    for (fingerprint, peer) in current {
+        match prev.get(fingerprint) {
+            None => events.push(DaemonEvent::PeerDiscovered(peer.clone())),
+            Some(&was_connected) if was_connected != peer.connected => {
+                events.push(DaemonEvent::PeerDiscovered(peer.clone()));
+            }
+            Some(_) => {} // present and unchanged: nothing to emit
+        }
+    }
+    for fingerprint in prev.keys() {
+        if !current.contains_key(fingerprint) {
+            events.push(DaemonEvent::PeerLost(fingerprint.clone()));
+        }
+    }
+    events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(fingerprint: &str, connected: bool) -> PeerInfo {
+        PeerInfo {
+            fingerprint: fingerprint.to_owned(),
+            peer_id: "pid".to_owned(),
+            connected,
+        }
+    }
+
+    fn map(peers: &[PeerInfo]) -> HashMap<String, PeerInfo> {
+        peers
+            .iter()
+            .map(|p| (p.fingerprint.clone(), p.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn new_peer_is_discovered() {
+        let events = compute_peer_events(&HashMap::new(), &map(&[peer("alice", true)]));
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], DaemonEvent::PeerDiscovered(p) if p.fingerprint == "alice"));
+    }
+
+    #[test]
+    fn unchanged_peer_emits_nothing() {
+        let prev = HashMap::from([("alice".to_owned(), true)]);
+        let events = compute_peer_events(&prev, &map(&[peer("alice", true)]));
+        assert!(events.is_empty());
+    }
+
+    /// The core of the bug-A fix: a connection dropping (connected true->false)
+    /// is surfaced as a PeerDiscovered upsert carrying connected=false.
+    #[test]
+    fn connection_drop_is_emitted_as_an_upsert() {
+        let prev = HashMap::from([("alice".to_owned(), true)]);
+        let events = compute_peer_events(&prev, &map(&[peer("alice", false)]));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            DaemonEvent::PeerDiscovered(p) => {
+                assert_eq!(p.fingerprint, "alice");
+                assert!(!p.connected, "must carry the new connected=false");
+            }
+            _ => panic!("expected a PeerDiscovered upsert"),
+        }
+    }
+
+    #[test]
+    fn reconnection_is_also_emitted() {
+        let prev = HashMap::from([("alice".to_owned(), false)]);
+        let events = compute_peer_events(&prev, &map(&[peer("alice", true)]));
+        assert!(
+            matches!(&events[0], DaemonEvent::PeerDiscovered(p) if p.connected),
+            "false->true must re-emit with connected=true"
+        );
+    }
+
+    #[test]
+    fn disappearance_is_peer_lost() {
+        let prev = HashMap::from([("alice".to_owned(), true)]);
+        let events = compute_peer_events(&prev, &HashMap::new());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], DaemonEvent::PeerLost(fp) if fp == "alice"));
+    }
 }

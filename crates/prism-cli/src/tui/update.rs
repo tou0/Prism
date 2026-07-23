@@ -551,6 +551,27 @@ mod tests {
     }
 
     #[test]
+    fn push_peer_connected_then_disconnected_updates_the_flag() {
+        let mut s = AppState::new(120, 40);
+        let up = PeerInfo {
+            fingerprint: "FPDAVE".to_owned(),
+            peer_id: "pid".to_owned(),
+            connected: true,
+        };
+        update(&mut s, Action::Push(Event::PeerDiscovered { peer: up }));
+        assert!(s.peers[0].connected);
+        // Its daemon is killed -> peer_watch re-emits with connected=false.
+        let down = PeerInfo {
+            fingerprint: "FPDAVE".to_owned(),
+            peer_id: "pid".to_owned(),
+            connected: false,
+        };
+        update(&mut s, Action::Push(Event::PeerDiscovered { peer: down }));
+        assert_eq!(s.peers.len(), 1, "an upsert must not duplicate the peer");
+        assert!(!s.peers[0].connected, "the drop must be reflected in state");
+    }
+
+    #[test]
     fn push_peer_discovered_then_lost_is_idempotent() {
         let mut s = AppState::new(120, 40);
         let peer = PeerInfo {

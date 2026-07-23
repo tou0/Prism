@@ -121,6 +121,43 @@ Decrypted messages live only in the core thread's RAM inbox for the process's
 lifetime; `inbox` drains it. Message history (on-disk) is a later milestone.
 The ratchet store (`sessions.prs`) persists ratchet state only.
 
+## Known limitations — connection robustness (deferred to M4/M5)
+
+M2b's networking is **synchronous and best-effort**: it delivers over whatever
+connection currently exists, with no reconnection machinery. Several consequences
+are known and **deliberately deferred** to the M4/M5 networking-robustness work —
+they are *documented*, not fixed, in M3:
+
+- **`connected` means "an open connection exists right now", not "reachable".**
+  The swarm sets `idle_connection_timeout = 60 s`, so an idle connection closes
+  and `connected` flips to `false` on **both** peers **even though both are alive
+  and reachable**. Concretely: a peer you have not exchanged with for a minute
+  will show as *not connected* (grey) in the TUI. **This is expected, not a
+  bug** — the next message re-dials and reconnects. The UI therefore uses the
+  neutral wording "connected / not connected" and never claims "reachable"
+  (honest-communication rule: we do not assert reachability we cannot prove).
+  Whether 60 s is the right idle timeout (vs a keep-alive) is an open M4/M5
+  tuning question.
+
+- **No reconnection / retry / address persistence.** Addresses are learned only
+  from mDNS (`Discovered`) and dropped on `Expired`; a single send failure
+  surfaces as "not reachable" with no retry. There is no redial-on-drop loop and
+  no persisted address book.
+
+- **A send is refused when the local address list for a peer is empty — even if a
+  connection to that peer is already open.** `Deliver`/`FetchBundle` require a
+  non-empty address list and do not fall back to reusing an existing (peer-
+  initiated) connection. This produces an **asymmetry**: if A's addresses for B
+  have expired but B still holds a route to A, B→A succeeds while A→B fails,
+  despite an open connection between them. Healing this (reuse open connections,
+  refresh/persist addresses, reconnect, retry) is genuine networking-robustness
+  work and belongs to M4/M5 — it is **not** a display bug and is intentionally
+  **not** patched in M3 (a partial fix would mask the symptom without addressing
+  the cause). See the roadmap note at M4/M5.
+
+None of this changes correctness or security — it is availability/UX robustness.
+"Nothing is queued on a failed send" remains correct (store-and-forward is M6).
+
 ## MSRV
 
 M2b raises the workspace MSRV to **1.88** (was 1.85 through M2). This is forced
