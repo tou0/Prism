@@ -43,3 +43,43 @@ pub const NO_PEERS: &str = "(no peers discovered on the local network yet)";
 pub fn not_reachable(handle: &str) -> String {
     format!("{handle} is not reachable on the local network; nothing was queued")
 }
+
+// ── TUI (M3) ────────────────────────────────────────────────────────────────
+
+pub const TUI_TITLE: &str = "Prism";
+pub const TUI_CONVERSATIONS: &str = "CONVERSATIONS";
+pub const TUI_PEERS: &str = "PEERS (mDNS)";
+pub const TUI_NET: &str = "NET";
+pub const TUI_NO_CONVERSATIONS: &str = "no conversations yet — open a peer";
+pub const TUI_NO_PEERS: &str = "no peers on the LAN yet";
+pub const TUI_NO_MESSAGES: &str = "no messages yet — press i to write one";
+pub const TUI_NO_CONVERSATION_SELECTED: &str = "select a conversation (↑↓, Enter) or a peer";
+pub const TUI_INPUT_HINT: &str = "type a message…";
+pub const TUI_YOU: &str = "you";
+pub const TUI_MODE_NORMAL: &str = "NORMAL";
+pub const TUI_MODE_INSERT: &str = "INSERT";
+pub const TUI_CONNECTING: &str = "connecting to the daemon…";
+pub const TUI_TOO_SMALL: &str = "terminal too small";
+
+pub const TUI_HELP_TITLE: &str = "Keys (press ? or Esc to close)";
+pub const TUI_HELP_BODY: &str = "\
+Navigation is arrow-first; the bar at the bottom always shows what is live.
+
+  ↑ / ↓        move selection, or scroll messages
+  Enter        open the selected conversation / peer; in messages, start typing
+  Tab / S-Tab  switch pane (conversations · peers · messages)
+  i            write a message (Insert mode)
+  Esc          leave Insert / close this help
+  ?            toggle this help
+  q            quit        Ctrl-C  quit from anywhere
+
+Mouse: click a conversation or peer to open it; wheel scrolls messages.
+Messages are end-to-end encrypted and kept in memory only — they are gone
+when you quit.";
+
+/// Keyhint bar text for the current mode/focus.
+pub const TUI_HINT_INSERT: &str = "Enter send · Esc cancel";
+pub const TUI_HINT_CONVERSATIONS: &str =
+    "↑↓ move · Enter open · Tab pane · i write · ? help · q quit";
+pub const TUI_HINT_PEERS: &str = "↑↓ move · Enter chat · Tab pane · i write · ? help · q quit";
+pub const TUI_HINT_MESSAGES: &str = "↑↓ scroll · i write · Tab pane · ? help · q quit";

@@ -8,6 +8,7 @@
 mod commands;
 mod prompt;
 mod text;
+mod tui;
 
 use std::path::PathBuf;
 
@@ -24,8 +25,9 @@ struct Cli {
     /// Path to the IPC socket (defaults to the per-user runtime directory).
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
+    /// Subcommand; when omitted, launches the interactive TUI (`chat`).
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -61,6 +63,8 @@ enum Command {
     Peers,
     /// Show network and identity status.
     Status,
+    /// Launch the interactive TUI (the default when no subcommand is given).
+    Chat,
 }
 
 fn main() -> Result<()> {
@@ -84,7 +88,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
     };
 
-    match cli.command {
+    match cli.command.unwrap_or(Command::Chat) {
         Command::Ping => commands::ping(&socket_path).await,
         Command::Init { force } => commands::init(&socket_path, force).await,
         Command::Restore { force } => commands::restore(&socket_path, force).await,
@@ -94,5 +98,6 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Inbox => commands::inbox(&socket_path).await,
         Command::Peers => commands::peers(&socket_path).await,
         Command::Status => commands::status(&socket_path).await,
+        Command::Chat => tui::run(&socket_path).await,
     }
 }

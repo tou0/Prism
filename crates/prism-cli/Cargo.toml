@@ -20,8 +20,11 @@ path = "src/main.rs"
 [dependencies]
 prism-core.workspace = true
 prism-proto.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 anyhow.workspace = true
 clap.workspace = true
 rpassword.workspace = true
 zeroize.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+futures.workspace = true

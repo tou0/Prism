@@ -54,6 +54,12 @@ proptest = "1"
 libp2p = { version = "0.56", default-features = false }
 futures = "0.3"
 
+# M3 — TUI (docs/specification.md §10.2). Confined to prism-cli. crossterm's
+# version is pinned to the one ratatui re-exports (avoids a duplicate); the
+# event-stream feature gives an async input stream for the non-blocking loop.
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
 # M1 — identity & keystore crypto (docs/specification.md §4-5, docs/keystore.md).
 # Audited RustCrypto / dalek primitives only; never hand-rolled crypto.
 argon2 = "0.5"
