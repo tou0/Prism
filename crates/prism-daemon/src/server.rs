@@ -103,6 +103,13 @@ async fn dispatch(state: &AppState, envelope: Envelope<Request>) -> Response {
         Request::Inbox => crate::networking::handle_inbox(state).await,
         Request::Peers => crate::networking::handle_peers(state).await,
         Request::Status => crate::networking::handle_status(state).await,
+        // Subscription is not a plain request→response: it is intercepted in
+        // `handle_connection`, which wires the connection to the push stream.
+        // The real handling arrives with the M3 daemon push wiring; if a
+        // `Subscribe` ever reaches here it means that interception is missing.
+        Request::Subscribe => Response::Error {
+            message: "subscription is not available on this daemon build".to_owned(),
+        },
     }
 }
 

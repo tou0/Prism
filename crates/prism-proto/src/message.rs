@@ -9,8 +9,14 @@ use crate::sensitive::Sensitive;
 ///
 /// Every message is wrapped in a versioned [`Envelope`]. This is the local
 /// IPC slice of the "every message carries a version" rule; authenticated
-/// version negotiation on the *network* handshake arrives with M2.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// version negotiation on the *network* handshake arrives with a later
+/// networking milestone.
+///
+/// Bumped to `2` for M3: the subscription/push contract ([`Request::Subscribe`],
+/// [`Response::Subscribed`], [`Response::Event`]) is a real addition to the
+/// client↔daemon protocol. The daemon rejects mismatched versions; a richer
+/// compatibility window is deferred with the rest of version negotiation.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// The user's choice of recovery mode at identity creation (spec §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +84,14 @@ pub enum Request {
     Peers,
     /// Network and identity status. Expects [`Response::Status`].
     Status,
+    /// Subscribe this connection to server-initiated push events (M3).
+    ///
+    /// The daemon first replies [`Response::Subscribed`], then pushes any
+    /// currently buffered inbox messages, then streams live [`Response::Event`]
+    /// frames (inbound messages, peer discovery) until the connection closes.
+    /// One-shot clients never send this, so their strictly request→response
+    /// flow is unaffected.
+    Subscribe,
 }
 
 /// A response sent by the daemon to the client.
@@ -141,6 +155,41 @@ pub enum Response {
         /// Human-readable error message (never contains secrets).
         message: String,
     },
+    /// Acknowledges [`Request::Subscribe`]: this connection is now subscribed
+    /// to push events (M3).
+    Subscribed,
+    /// A server-initiated push to a subscribed connection (M3).
+    ///
+    /// This is a *distinct variant*, so a client can always tell an unsolicited
+    /// push apart from the reply to its most recent request: anything that is
+    /// not an `Event` is that reply. A one-shot client never subscribes, so it
+    /// never receives an `Event` and its single read is always its response.
+    Event(Event),
+}
+
+/// A server-initiated push event delivered to a subscribed connection (M3).
+///
+/// Carried inside [`Response::Event`]. Message bodies stay wrapped in
+/// [`Sensitive`] (redacted in `Debug`, zeroized on drop, never logged).
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Event {
+    /// An inbound message was received, decrypted, and identity-verified.
+    Message {
+        /// The sender's full fingerprint (base58), cryptographically verified.
+        from_fingerprint: String,
+        /// The decrypted message body.
+        body: Sensitive,
+    },
+    /// A peer appeared on the local network (mDNS discovery).
+    PeerDiscovered {
+        /// The newly discovered peer.
+        peer: PeerInfo,
+    },
+    /// A previously discovered peer is no longer visible on the local network.
+    PeerLost {
+        /// The full fingerprint (base58) of the peer that disappeared.
+        fingerprint: String,
+    },
 }
 
 /// One received message in the inbox.
@@ -179,5 +228,78 @@ impl<T> Envelope<T> {
             version: PROTOCOL_VERSION,
             message,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscribe_request_round_trips() {
+        let json = serde_json::to_string(&Request::Subscribe).expect("serialize");
+        let back: Request = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back, Request::Subscribe));
+    }
+
+    #[test]
+    fn subscribed_response_round_trips() {
+        let json = serde_json::to_string(&Response::Subscribed).expect("serialize");
+        let back: Response = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(back, Response::Subscribed));
+    }
+
+    #[test]
+    fn message_event_preserves_sender_and_body() {
+        let event = Response::Event(Event::Message {
+            from_fingerprint: "3R95oF6ZdppUsD".to_owned(),
+            body: Sensitive::new("hello over the wire".to_owned()),
+        });
+        let json = serde_json::to_string(&event).expect("serialize");
+        let back: Response = serde_json::from_str(&json).expect("deserialize");
+        match back {
+            Response::Event(Event::Message {
+                from_fingerprint,
+                body,
+            }) => {
+                assert_eq!(from_fingerprint, "3R95oF6ZdppUsD");
+                assert_eq!(body.expose(), "hello over the wire");
+            }
+            other => panic!("expected a message event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn peer_events_round_trip() {
+        let discovered = Response::Event(Event::PeerDiscovered {
+            peer: PeerInfo {
+                fingerprint: "abc".to_owned(),
+                peer_id: "12D3Koo".to_owned(),
+                connected: true,
+            },
+        });
+        let json = serde_json::to_string(&discovered).expect("serialize");
+        let back: Response = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back,
+            Response::Event(Event::PeerDiscovered { peer }) if peer.fingerprint == "abc"
+        ));
+
+        let lost = Response::Event(Event::PeerLost {
+            fingerprint: "abc".to_owned(),
+        });
+        let json = serde_json::to_string(&lost).expect("serialize");
+        let back: Response = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back,
+            Response::Event(Event::PeerLost { fingerprint }) if fingerprint == "abc"
+        ));
+    }
+
+    #[test]
+    fn envelope_carries_protocol_version_two() {
+        assert_eq!(PROTOCOL_VERSION, 2);
+        let env = Envelope::new(Request::Subscribe);
+        assert_eq!(env.version, 2);
     }
 }
