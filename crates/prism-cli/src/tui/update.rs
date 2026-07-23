@@ -224,7 +224,9 @@ fn send_current(state: &mut AppState) -> Vec<Effect> {
         state.notice = Some("open a conversation first".to_owned());
         return Vec::new();
     };
-    let fingerprint = state.conversations[index].fingerprint.clone();
+    // The daemon resolves the recipient by the fingerprint after '#', matching
+    // the *short* (handle) fingerprint — so address by that, not the full one.
+    let short = AppState::short_fingerprint(&state.conversations[index].fingerprint).to_owned();
     // Local echo, pending until the daemon confirms.
     state.conversations[index].messages.push(ChatMessage {
         direction: Direction::Outgoing,
@@ -232,9 +234,8 @@ fn send_current(state: &mut AppState) -> Vec<Effect> {
         body: Sensitive::new(body.to_string()),
     });
     state.scroll = 0;
-    // The daemon resolves the recipient by the fingerprint after '#'.
     vec![Effect::Send {
-        to: format!("#{fingerprint}"),
+        to: format!("#{short}"),
         body,
     }]
 }
@@ -426,7 +427,9 @@ mod tests {
         assert_eq!(effects.len(), 1);
         match &effects[0] {
             Effect::Send { to, body } => {
-                assert!(to.contains("FPALICE"));
+                // Addressed by the 14-char short fingerprint (what the daemon
+                // matches), not the full one.
+                assert_eq!(to, "#FPALICE1234567");
                 assert_eq!(body.as_str(), "hi");
             }
             _ => panic!("expected a Send effect"),
