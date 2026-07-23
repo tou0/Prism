@@ -56,6 +56,7 @@ The **daemon holds the secrets**; the **client never holds a private key in plai
 - **M6** — Offline (store-and-forward, ACK / resend, TTL, redundancy).
 - **M7** — Anti-spam (memory-hard PoW, difficulty by local history).
 - **M8** — Hardening (kill switch, ephemeral messages, fuzzing, audit prep).
+- **Contacts (address book)** — *priority TBD, slot around M4–M5*: a user-owned address book mapping a **locally-assigned** name to a **cryptographically-verified** fingerprint (Signal-style `add` / `verify`, spec §7), **persisted in the encrypted local database** (the same at-rest store introduced for message history). It is **not** self-declared names carried over the wire — nicknames are never transmitted and are not falsifiable-safe, so trusting them would be an impersonation vector. Until this lands, the TUI correctly shows the raw short fingerprint for peers/senders (M3 has no persistence and no verified names); once it exists, the TUI displays the local name in place of the fingerprint. Depends on the encrypted history/persistence store.
 
 ## Out of scope (DO NOT build now)
 Groups, channels, whisper, roles; DHT / relays / offline before their milestone; anti-spam PoW (M7); onion routing / metadata privacy; advanced anti-coercion (plausible deniability, dead-man's switch); identity-key succession; post-quantum. **Do not anticipate these.**
@@ -63,7 +64,7 @@ Groups, channels, whisper, roles; DHT / relays / offline before their milestone;
 ## Conventions
 - `cargo fmt` + `cargo clippy -- -D warnings` **must pass**.
 - Tests next to the code; **test vectors** for all crypto; `cargo test` green before a milestone is considered done.
-- `cargo audit` + `cargo deny` in CI.
+- `cargo audit` + `cargo deny` in CI. Deferred/ignored advisories are indexed in `docs/security-debt.md` (each with its drop condition and whether it blocks a milestone — RUSTSEC-2026-0119 blocks M4).
 - Small, atomic commits with clear messages.
 - **Ask before** any destructive action or any dependency outside the stack above.
 - Propose a file plan **before** coding a milestone, then wait for approval.

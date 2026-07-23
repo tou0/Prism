@@ -130,6 +130,10 @@ by libp2p 0.56's transitive dependencies: `base45` (via `multiaddr` →
 
 ## Supply chain (documented risk-acceptances — PENDING RATIFICATION)
 
+> The consolidated index of *all* deferred advisories (networking and beyond)
+> lives in [`docs/security-debt.md`](security-debt.md); the networking ones are
+> detailed below.
+
 > **M4 BLOCKER (ratified 2026-07-22).** The advisory ignores below are accepted
 > **only** for M2b's local perimeter. A LAN-only DoS becomes internet-wide the
 > moment M4's DHT exposes the node globally, so **these ignores MUST be
