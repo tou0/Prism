@@ -254,10 +254,8 @@ impl SwarmTask {
                     }
                 }
             }
-            SwarmEvent::NewListenAddr { address, .. } => {
-                if !self.listen_addrs.contains(&address) {
-                    self.listen_addrs.push(address);
-                }
+            SwarmEvent::NewListenAddr { address, .. } if !self.listen_addrs.contains(&address) => {
+                self.listen_addrs.push(address);
             }
             _ => {}
         }
