@@ -9,16 +9,17 @@ does **not** promise "100% secure" or "untraceable" — it maximizes protection
 and communicates its limits honestly. See [`docs/specification.md`](docs/specification.md)
 for the full design.
 
-> **Status: milestone M2b (Local networked messaging).** Two `prismd`
-> instances on the same LAN now **discover each other via mDNS and exchange
-> real end-to-end-encrypted messages** — the M2 crypto core (Olm 3DH + Double
-> Ratchet via `vodozemac`, identity-signed prekey bundles, strict key
-> validation) carried over libp2p (TCP + Noise + Yamux). The libp2p `PeerId`
-> is the M1 Ed25519 identity, and delivery enforces a two-layer identity check
-> and the persist-before-transmit contract (`docs/net.md`). Delivery is
-> **synchronous only** — both peers must be online; nothing is queued. **No
-> DHT, NAT traversal, relays, offline delivery, or TUI yet** — those are later
-> milestones.
+> **Status: milestone M3 (interactive TUI).** `prism chat` (or bare `prism`)
+> opens a **ratatui/crossterm terminal interface** over the M2b networked
+> messaging: a conversation list, discovered peers, a chat view, and a network
+> panel, with **arrow-key-first navigation** (mouse as a complement) and
+> **real-time push** — incoming messages and peer discovery appear on their own,
+> delivered over a new additive daemon→client subscription (the one-shot
+> `send`/`inbox`/`peers`/`status` commands are unchanged). Messages are
+> **ephemeral / RAM-only** (nothing decrypted is written to disk) and the UI
+> keeps the terminal's own background, so a transparent/light/dark theme is
+> preserved. Still **no DHT, NAT traversal, relays, offline delivery, or message
+> history** — those are later milestones.
 
 ## Workspace layout
 
@@ -28,7 +29,7 @@ for the full design.
 | `prism-proto` | IPC message types and the framed serde codec. |
 | `prism-net` | libp2p networking layer: mDNS discovery + Noise request/response (opaque bytes only; no crypto). |
 | `prism-daemon` | Background daemon `prismd`: holds keys, runs the network, exposes the IPC socket. |
-| `prism-cli` | Thin client `prism`: talks to the daemon over IPC. |
+| `prism-cli` | Thin client `prism`: one-shot commands and the interactive TUI (`chat`), over IPC. |
 
 The daemon holds the secrets; the client never holds a private key in plaintext.
 
@@ -70,6 +71,7 @@ cargo run --bin prism -- status           # network + identity status
 cargo run --bin prism -- peers            # peers discovered on the LAN
 cargo run --bin prism -- send <handle> "hi"  # send an encrypted message
 cargo run --bin prism -- inbox            # show and drain received messages
+cargo run --bin prism -- chat             # interactive TUI (also the default: bare `prism`)
 ```
 
 `init` asks for a nickname, a passphrase, and whether to generate an optional
@@ -83,6 +85,13 @@ To message: run two unlocked daemons on the same LAN; each sees the other under
 message that appears in the recipient's `inbox`. Both peers must be online —
 delivery is synchronous and nothing is queued (offline delivery is a later
 milestone). See [`docs/net.md`](docs/net.md).
+
+Or just run `prism chat` (or bare `prism`) for the interactive TUI: pick a peer
+from the discovered list, open a conversation, and type — incoming messages
+appear in real time. It is keyboard-first (arrow keys, `Enter`, `Tab`, `i` to
+write, `?` for help, `q` to quit) with mouse as a complement, and it keeps your
+terminal's own background (transparent/light/dark all work). Messages live in
+memory only and are gone when you quit.
 
 Both binaries accept `--socket <PATH>`; the daemon also accepts
 `--keystore <PATH>`, `--sessions <PATH>`, and `--listen <MULTIADDR>`.

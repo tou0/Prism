@@ -24,6 +24,12 @@ ignore = [
     # `paste` proc-macro unmaintained (compile-time only, no runtime surface,
     # no maintained drop-in replacement; pulled transitively).
     "RUSTSEC-2024-0436",
+    # M3: `lru` IterMut Stacked-Borrows unsoundness (a Miri-level soundness
+    # lint, not a known exploit). Pulled transitively by ratatui 0.29 for its
+    # internal render cache; the fix is in lru 0.13 but ratatui 0.29 pins
+    # `lru = "0.12"` (no in-semver fix). Local-client-only surface. Not an M4
+    # blocker (unrelated to network exposure). Drop when ratatui bumps lru.
+    "RUSTSEC-2026-0002",
 ]
 
 [licenses]
