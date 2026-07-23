@@ -9,7 +9,9 @@
 //! The binary entry point lives in `main.rs`; the socket and server logic live
 //! here so they can be driven directly by tests.
 
+pub mod events;
 pub mod networking;
+pub mod peer_watch;
 pub mod server;
 pub mod session_core;
 pub mod socket;

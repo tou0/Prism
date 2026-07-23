@@ -13,13 +13,16 @@
 //! the inbox lives only for the process's lifetime.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use prism_core::session::{OtkChoice, SessionManager};
 use prism_core::{IdentityKeypair, PublicIdentity};
 use prism_net::InboundOutcome;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::warn;
 use zeroize::Zeroizing;
+
+use crate::events::{DaemonEvent, InboundMessage};
 
 /// A decrypted message held in RAM until the client drains it.
 pub struct InboxEntry {
@@ -138,16 +141,23 @@ impl CoreHandle {
 /// caller's job — on a blocking task — so open errors surface synchronously.
 ///
 /// Fails only if the OS refuses to create the thread.
-pub fn spawn_core(manager: SessionManager) -> std::io::Result<CoreHandle> {
+pub fn spawn_core(
+    manager: SessionManager,
+    events: broadcast::Sender<DaemonEvent>,
+) -> std::io::Result<CoreHandle> {
     let (tx, rx) = mpsc::channel(64);
     std::thread::Builder::new()
         .name("prism-core-session".to_owned())
-        .spawn(move || run(manager, rx))?;
+        .spawn(move || run(manager, rx, events))?;
     Ok(CoreHandle { tx })
 }
 
 /// The core thread's serial command loop.
-fn run(mut manager: SessionManager, mut rx: mpsc::Receiver<CoreMsg>) {
+fn run(
+    mut manager: SessionManager,
+    mut rx: mpsc::Receiver<CoreMsg>,
+    events: broadcast::Sender<DaemonEvent>,
+) {
     let mut inbox: Vec<InboxEntry> = Vec::new();
     while let Some(msg) = rx.blocking_recv() {
         match msg {
@@ -171,7 +181,7 @@ fn run(mut manager: SessionManager, mut rx: mpsc::Receiver<CoreMsg>) {
                 sealed,
                 reply,
             } => {
-                let _ = reply.send(inbound(&mut manager, from, &sealed, &mut inbox));
+                let _ = reply.send(inbound(&mut manager, from, &sealed, &mut inbox, &events));
             }
             CoreMsg::Inbox { reply } => {
                 let _ = reply.send(std::mem::take(&mut inbox));
@@ -206,11 +216,18 @@ fn deliver(
 }
 
 /// Decrypt an inbound message and enforce the transport↔crypto identity bind.
+///
+/// On acceptance the message is either **pushed live** to subscribers or, if
+/// none are subscribed, **buffered** for a later `Inbox` drain — never both.
+/// `broadcast::send` errors *iff* there are zero receivers, so its result is
+/// the race-free signal to fall back to buffering (no message is dropped, and
+/// a live subscriber avoids unbounded buffer growth).
 fn inbound(
     manager: &mut SessionManager,
     from: [u8; 32],
     sealed: &[u8],
     inbox: &mut Vec<InboxEntry>,
+    events: &broadcast::Sender<DaemonEvent>,
 ) -> InboundOutcome {
     // The Noise-authenticated sender key must be a valid identity key.
     let Ok(from_identity) = PublicIdentity::from_bytes(&from) else {
@@ -227,10 +244,22 @@ fn inbound(
         warn!("rejected inbound: transport identity does not match message identity");
         return InboundOutcome::Rejected;
     }
-    inbox.push(InboxEntry {
+
+    let event = DaemonEvent::Message(Arc::new(InboundMessage {
         from_fingerprint: decrypted.peer.fingerprint().full(),
         body: decrypted.plaintext,
-    });
+    }));
+    // No subscribers: reclaim the payload and buffer it. We hold the only
+    // `Arc` on this path (send returned it), so `try_unwrap` succeeds.
+    if let Err(broadcast::error::SendError(DaemonEvent::Message(msg))) = events.send(event) {
+        match Arc::try_unwrap(msg) {
+            Ok(inner) => inbox.push(InboxEntry {
+                from_fingerprint: inner.from_fingerprint,
+                body: inner.body,
+            }),
+            Err(_) => warn!("could not reclaim an inbound message for buffering"),
+        }
+    }
     InboundOutcome::Accepted
 }
 
@@ -276,8 +305,9 @@ mod tests {
             .public()
             .as_bytes();
         let mut inbox = Vec::new();
+        let (events, _) = broadcast::channel(16); // no subscriber -> would buffer
         assert_eq!(
-            inbound(&mut bob, carol_key, &sealed, &mut inbox),
+            inbound(&mut bob, carol_key, &sealed, &mut inbox, &events),
             InboundOutcome::Rejected
         );
         assert!(
@@ -302,8 +332,10 @@ mod tests {
 
         let alice_key = *alice_id.public().as_bytes();
         let mut inbox = Vec::new();
+        // No live subscriber, so an accepted message buffers into the inbox.
+        let (events, _) = broadcast::channel(16);
         assert_eq!(
-            inbound(&mut bob, alice_key, &sealed, &mut inbox),
+            inbound(&mut bob, alice_key, &sealed, &mut inbox, &events),
             InboundOutcome::Accepted
         );
         assert_eq!(inbox.len(), 1);
@@ -312,6 +344,45 @@ mod tests {
             inbox[0].from_fingerprint,
             alice_id.public().fingerprint().full()
         );
+    }
+
+    /// With a live subscriber, an accepted message is pushed to the broadcast
+    /// and is **not** buffered — the arbitration that prevents both double
+    /// delivery and unbounded buffer growth during a live TUI session.
+    #[test]
+    fn inbound_pushes_live_and_skips_buffer_when_subscribed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (alice_id, mut alice) = manager(&dir, 0xA1);
+        let (bob_id, mut bob) = manager(&dir, 0xB0);
+
+        let bundle = bob.publish_bundle(4).unwrap();
+        let sid = alice
+            .establish_outbound(&bob_id.public(), &bundle, OtkChoice::Auto)
+            .unwrap();
+        let sealed = alice.encrypt(&sid, b"live hello").unwrap();
+
+        let alice_key = *alice_id.public().as_bytes();
+        let mut inbox = Vec::new();
+        let (events, mut rx) = broadcast::channel(16); // a live subscriber
+        assert_eq!(
+            inbound(&mut bob, alice_key, &sealed, &mut inbox, &events),
+            InboundOutcome::Accepted
+        );
+        assert!(
+            inbox.is_empty(),
+            "with a subscriber, the message must be pushed, not buffered"
+        );
+        let event = match rx.try_recv() {
+            Ok(event) => event,
+            Err(e) => panic!("expected a pushed message event: {e:?}"),
+        };
+        match event {
+            DaemonEvent::Message(msg) => {
+                assert_eq!(msg.body.as_slice(), b"live hello");
+                assert_eq!(msg.from_fingerprint, alice_id.public().fingerprint().full());
+            }
+            _ => panic!("expected a message event"),
+        }
     }
 
     /// Garbage bytes delivered as a message are a clean rejection, never a panic.
@@ -323,8 +394,15 @@ mod tests {
             .public()
             .as_bytes();
         let mut inbox = Vec::new();
+        let (events, _) = broadcast::channel(16);
         assert_eq!(
-            inbound(&mut bob, some_key, &[0xde, 0xad, 0xbe, 0xef], &mut inbox),
+            inbound(
+                &mut bob,
+                some_key,
+                &[0xde, 0xad, 0xbe, 0xef],
+                &mut inbox,
+                &events
+            ),
             InboundOutcome::Rejected
         );
         assert!(inbox.is_empty());

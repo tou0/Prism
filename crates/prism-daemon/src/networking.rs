@@ -90,8 +90,8 @@ pub async fn ensure_up(state: &AppState, seed: Seed32) -> Result<(), String> {
     .map_err(|_| "failed to build the session store".to_owned())?
     .map_err(|e| e.to_string())?;
 
-    let core =
-        spawn_core(manager).map_err(|e| format!("failed to start the session thread: {e}"))?;
+    let core = spawn_core(manager, state.events.clone())
+        .map_err(|e| format!("failed to start the session thread: {e}"))?;
 
     // Publish an initial bundle so peers can establish with us.
     let bundle = core.publish_bundle(DEFAULT_ONE_TIME_KEYS).await?;
@@ -106,8 +106,15 @@ pub async fn ensure_up(state: &AppState, seed: Seed32) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to advertise the bundle: {e}"))?;
 
+    // Watch the peer list and push discover/lost events to subscribers.
+    let peer_watch = crate::peer_watch::spawn_peer_watch(net.clone(), state.events.clone());
+
     info!(peer_id = net.local_peer_id(), "networking is up");
-    *guard = Some(NetworkHandles { net, core });
+    *guard = Some(NetworkHandles {
+        net,
+        core,
+        _peer_watch: peer_watch,
+    });
     Ok(())
 }
 

@@ -11,11 +11,13 @@ use prism_core::keystore::{self, KeystoreContents};
 use prism_core::recovery::RecoveryPhrase;
 use prism_core::{validate_nick, IdentityKeypair, Passphrase, Seed32};
 use prism_proto::{
-    read_message_opt, write_message, Envelope, ProtoError, RecoveryMode, Request, Response,
+    read_message_opt, write_message, Envelope, Event, ProtoError, RecoveryMode, Request, Response,
     Sensitive, PROTOCOL_VERSION,
 };
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::task::JoinError;
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::{JoinError, JoinHandle};
 use tracing::{debug, warn};
 
 use crate::state::{AppState, UnlockedIdentity};
@@ -63,13 +65,126 @@ pub async fn serve(listener: UnixListener, state: Arc<AppState>) -> Result<(), D
     }
 }
 
-/// Serve requests on a single connection until the peer closes it.
-async fn handle_connection(mut stream: UnixStream, state: Arc<AppState>) -> Result<(), ProtoError> {
-    while let Some(envelope) = read_message_opt::<_, Envelope<Request>>(&mut stream).await? {
-        let response = dispatch(&state, envelope).await;
-        write_message(&mut stream, &Envelope::new(response)).await?;
+/// Serve a single connection until the peer closes it.
+///
+/// The read and write halves are split so a subscribed connection can carry two
+/// concurrent flows — solicited request→response and unsolicited pushes —
+/// without either blocking the other. **All writes funnel through one writer
+/// task** fed by an mpsc, so the two flows never interleave a torn frame on the
+/// socket. A one-shot client that never subscribes still sees exactly one
+/// response per request, in order: its behaviour on the wire is unchanged.
+async fn handle_connection(stream: UnixStream, state: Arc<AppState>) -> Result<(), ProtoError> {
+    let (mut read_half, write_half) = stream.into_split();
+    let (out_tx, out_rx) = mpsc::channel::<Envelope<Response>>(64);
+    let writer = tokio::spawn(writer_task(write_half, out_rx));
+
+    // Started on `Subscribe`; kept so it can be torn down when the read side
+    // ends (dropping its broadcast receiver auto-unsubscribes).
+    let mut forwarder: Option<JoinHandle<()>> = None;
+
+    let outcome = run_requests(&state, &mut read_half, &out_tx, &mut forwarder).await;
+
+    if let Some(handle) = forwarder {
+        handle.abort();
+    }
+    drop(out_tx); // let the writer task finish
+    let _ = writer.await;
+    outcome
+}
+
+/// The sole owner of the write half: serializes every outbound frame (solicited
+/// responses and pushes alike) so they never interleave on the socket.
+async fn writer_task(
+    mut write_half: OwnedWriteHalf,
+    mut out_rx: mpsc::Receiver<Envelope<Response>>,
+) {
+    while let Some(envelope) = out_rx.recv().await {
+        if write_message(&mut write_half, &envelope).await.is_err() {
+            break; // peer went away; stop writing
+        }
+    }
+}
+
+/// Read and answer requests until the peer closes the connection.
+///
+/// A version-correct `Subscribe` is intercepted here (it upgrades the
+/// connection to a push stream) rather than dispatched; every other request is
+/// a plain request→response routed through the writer.
+async fn run_requests(
+    state: &Arc<AppState>,
+    read_half: &mut OwnedReadHalf,
+    out_tx: &mpsc::Sender<Envelope<Response>>,
+    forwarder: &mut Option<JoinHandle<()>>,
+) -> Result<(), ProtoError> {
+    while let Some(envelope) = read_message_opt::<_, Envelope<Request>>(read_half).await? {
+        if envelope.version == PROTOCOL_VERSION && matches!(envelope.message, Request::Subscribe) {
+            if out_tx
+                .send(Envelope::new(Response::Subscribed))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            // A repeat Subscribe restarts the forwarder (fresh backlog flush).
+            if let Some(previous) = forwarder.take() {
+                previous.abort();
+            }
+            *forwarder = Some(spawn_event_forwarder(Arc::clone(state), out_tx.clone()));
+            continue;
+        }
+
+        let response = dispatch(state, envelope).await;
+        if out_tx.send(Envelope::new(response)).await.is_err() {
+            break;
+        }
     }
     Ok(())
+}
+
+/// Forward push events to one subscribed connection until it disconnects.
+///
+/// Subscribes to the broadcast **first** (so no live event is missed), then
+/// flushes any buffered inbox (messages that arrived while nobody was
+/// subscribed), then streams live events. A slow subscriber that lags is
+/// noted and continues — never fatal, never blocking the sender.
+fn spawn_event_forwarder(
+    state: Arc<AppState>,
+    out_tx: mpsc::Sender<Envelope<Response>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut rx = state.events.subscribe();
+
+        let buffered = match state.net.read().await.as_ref() {
+            Some(handles) => handles.core.inbox().await,
+            None => Vec::new(),
+        };
+        for entry in buffered {
+            let event = Response::Event(Event::Message {
+                from_fingerprint: entry.from_fingerprint,
+                // Lossy UTF-8 for display, mirroring the `Inbox` drain; the
+                // body never touched disk and is re-wrapped in `Sensitive`.
+                body: Sensitive::new(String::from_utf8_lossy(&entry.body).into_owned()),
+            });
+            if out_tx.send(Envelope::new(event)).await.is_err() {
+                return;
+            }
+        }
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let wire = Envelope::new(Response::Event(event.to_wire()));
+                    if out_tx.send(wire).await.is_err() {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                    debug!(dropped, "push subscriber lagged; some events skipped");
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    })
 }
 
 /// Map a versioned request to a response, rejecting unsupported versions.
@@ -103,12 +218,13 @@ async fn dispatch(state: &AppState, envelope: Envelope<Request>) -> Response {
         Request::Inbox => crate::networking::handle_inbox(state).await,
         Request::Peers => crate::networking::handle_peers(state).await,
         Request::Status => crate::networking::handle_status(state).await,
-        // Subscription is not a plain request→response: it is intercepted in
-        // `handle_connection`, which wires the connection to the push stream.
-        // The real handling arrives with the M3 daemon push wiring; if a
-        // `Subscribe` ever reaches here it means that interception is missing.
+        // Subscription is not a plain request→response: `run_requests`
+        // intercepts a version-correct `Subscribe` and upgrades the connection
+        // to a push stream, so this arm is unreachable in practice. Kept as a
+        // defensive fallback (a version-mismatched `Subscribe` is caught by the
+        // version check above, never reaching here).
         Request::Subscribe => Response::Error {
-            message: "subscription is not available on this daemon build".to_owned(),
+            message: "subscription must be issued on a live connection".to_owned(),
         },
     }
 }

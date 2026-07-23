@@ -50,7 +50,7 @@ The **daemon holds the secrets**; the **client never holds a private key in plai
 - **M2 — Encrypted sessions (crypto core)** ✅: Olm 3DH + Double Ratchet via `vodozemac`, identity-signed prekey bundles, strict key validation on ingestion, sealed ratchet-state store. Exercised **locally** (two identities exchanging bytes in-process) — **no network**.
 - **M2b — Local networked messaging** <- *CURRENT*: mDNS discovery + TCP/Noise/Yamux via `rust-libp2p`, `send` / `inbox` / `peers` / `status`, `PeerId` bound to the Ed25519 identity, two-layer identity check, persist-before-transmit preserved over the network. Synchronous delivery only (no offline queue). CBOR request/response carries the opaque M2 wire bytes; protocol version via multistream-select inside Noise. (Protobuf network wire format and richer authenticated version negotiation deferred to a later networking milestone.)
 - **M3** — TUI (`ratatui`, `chat`).
-- **M4** — DHT & discovery (Kademlia + prekeys + S/Kademlia hardening).
+- **M4** — DHT & discovery (Kademlia + prekeys + S/Kademlia hardening). *(Net-layer nice-to-have, not a blocker: consider replacing M3's peer-discovery polling with an event channel (mpsc) pushed from prism-net's `SwarmTask` on mDNS discovered/expired — more idiomatic than the daemon polling `net.peers()`. Deferred to whenever the net layer is next reworked; see the note in `peer_watch.rs`.)*
 - **M5** — NAT & relays (DCUtR / AutoNAT / Relay v2, capped opt-in relaying).
 - **M5b (v1.x)** — Optional Tor transport via **Arti** (`arti-client`): opt-in onion transport; solves symmetric-NAT reachability and hides IPs. (Verify onion-service hosting maturity.)
 - **M6** — Offline (store-and-forward, ACK / resend, TTL, redundancy).
