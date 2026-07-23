@@ -9,6 +9,7 @@
 //! fed by a dedicated I/O task that owns the socket). A keystroke never waits
 //! on the socket; a reply never freezes input.
 
+mod ipc;
 mod state;
 mod update;
 mod view;
@@ -24,17 +25,16 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
-use prism_proto::{read_message, write_message, Envelope, Request, Response, Sensitive};
+use prism_proto::{Request, Sensitive};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use tokio::net::UnixStream;
-use tokio::sync::mpsc;
 
 use state::AppState;
 use update::{Action, Effect};
 
-/// How often to refresh peers/status and drain the inbox.
-const REFRESH: Duration = Duration::from_secs(2);
+/// How often to reconcile status (peer changes arrive live via push; this is a
+/// light safety-net refresh, not the primary path).
+const REFRESH: Duration = Duration::from_secs(5);
 
 /// Restores the terminal on drop — even on error or panic unwind — so the
 /// user's shell is never left in raw mode or the alternate screen.
@@ -68,19 +68,14 @@ impl Drop for TerminalGuard {
 
 /// Launch the interactive chat TUI against the daemon at `socket_path`.
 pub async fn run(socket_path: &Path) -> Result<()> {
-    // Connect before taking over the terminal, so a failure prints normally.
-    let stream = UnixStream::connect(socket_path)
-        .await
-        .context("connecting to prismd (is it running and unlocked?)")?;
+    // Connect + subscribe before taking over the terminal, so a failure prints
+    // normally instead of inside the alternate screen.
+    let mut conn = ipc::connect_subscribed(socket_path).await?;
 
-    let (req_tx, req_rx) = mpsc::channel::<Request>(32);
-    let (resp_tx, mut resp_rx) = mpsc::channel::<Response>(64);
-    tokio::spawn(io_task(stream, req_rx, resp_tx));
-
-    // Initial fetch of identity, status, and peers.
-    let _ = req_tx.send(Request::Whoami).await;
-    let _ = req_tx.send(Request::Status).await;
-    let _ = req_tx.send(Request::Peers).await;
+    // Initial snapshot; live changes then arrive via push.
+    let _ = conn.requests.send(Request::Whoami).await;
+    let _ = conn.requests.send(Request::Status).await;
+    let _ = conn.requests.send(Request::Peers).await;
 
     let mut guard = TerminalGuard::enter()?;
     let size = guard.terminal.size().context("reading terminal size")?;
@@ -110,12 +105,10 @@ pub async fn run(socket_path: &Path) -> Result<()> {
                 Some(Ok(_)) => continue,
                 Some(Err(_)) | None => break,
             },
-            Some(response) = resp_rx.recv() => Action::Reply(response),
+            Some(response) = conn.responses.recv() => Action::Reply(response),
+            Some(event) = conn.pushes.recv() => Action::Push(event),
             _ = refresh.tick() => {
-                // Poll peers/status/inbox on the request connection.
-                let _ = req_tx.send(Request::Peers).await;
-                let _ = req_tx.send(Request::Status).await;
-                let _ = req_tx.send(Request::Inbox).await;
+                let _ = conn.requests.send(Request::Status).await;
                 Action::Tick
             }
         };
@@ -123,7 +116,8 @@ pub async fn run(socket_path: &Path) -> Result<()> {
         for effect in update::update(&mut state, action) {
             match effect {
                 Effect::Send { to, body } => {
-                    let _ = req_tx
+                    let _ = conn
+                        .requests
                         .send(Request::Send {
                             to,
                             body: Sensitive::from_zeroizing(body),
@@ -144,29 +138,4 @@ pub async fn run(socket_path: &Path) -> Result<()> {
             .context("drawing a frame")?;
     }
     Ok(())
-}
-
-/// Owns the IPC connection: forwards requests from the loop and streams
-/// responses back. Runs until either channel closes or the socket errors.
-async fn io_task(
-    mut stream: UnixStream,
-    mut req_rx: mpsc::Receiver<Request>,
-    resp_tx: mpsc::Sender<Response>,
-) {
-    while let Some(request) = req_rx.recv().await {
-        if write_message(&mut stream, &Envelope::new(request))
-            .await
-            .is_err()
-        {
-            break;
-        }
-        match read_message::<_, Envelope<Response>>(&mut stream).await {
-            Ok(envelope) => {
-                if resp_tx.send(envelope.message).await.is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
 }

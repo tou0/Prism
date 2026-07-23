@@ -9,7 +9,7 @@
 //! is unit-tested without a real terminal.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use prism_proto::{Response, Sensitive};
+use prism_proto::{Event, Response, Sensitive};
 use zeroize::Zeroizing;
 
 use super::state::{AppState, ChatMessage, Delivery, Direction, Focus, Layout, Mode, StatusInfo};
@@ -37,6 +37,8 @@ pub enum Action {
     Resize(u16, u16),
     /// A solicited reply from the daemon.
     Reply(Response),
+    /// An unsolicited push from the daemon (subscribed connection).
+    Push(Event),
     /// A periodic tick (drives the status clock; no state change by itself).
     Tick,
 }
@@ -53,6 +55,10 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::Tick => Vec::new(),
         Action::Reply(response) => {
             apply_reply(state, response);
+            Vec::new()
+        }
+        Action::Push(event) => {
+            apply_push(state, event);
             Vec::new()
         }
         Action::Mouse(event) => handle_mouse(state, event),
@@ -325,6 +331,36 @@ fn apply_reply(state: &mut AppState, response: Response) {
     }
 }
 
+/// Apply a server-initiated push to the state.
+fn apply_push(state: &mut AppState, event: Event) {
+    match event {
+        Event::Message {
+            from_fingerprint,
+            body,
+        } => ingest_incoming(state, from_fingerprint, body),
+        Event::PeerDiscovered { peer } => {
+            // Idempotent: update in place if we already know this fingerprint
+            // (the initial Peers snapshot and a push can overlap), else append.
+            match state
+                .peers
+                .iter_mut()
+                .find(|p| p.fingerprint == peer.fingerprint)
+            {
+                Some(existing) => *existing = peer,
+                None => state.peers.push(peer),
+            }
+            state.status.peer_count = state.peers.len();
+        }
+        Event::PeerLost { fingerprint } => {
+            state.peers.retain(|p| p.fingerprint != fingerprint);
+            if state.selected_peer >= state.peers.len() {
+                state.selected_peer = state.peers.len().saturating_sub(1);
+            }
+            state.status.peer_count = state.peers.len();
+        }
+    }
+}
+
 /// Mark the oldest still-pending outgoing message with `delivery`. Sends are
 /// serialized over the connection, so oldest-pending correlates to the reply.
 fn mark_oldest_pending(state: &mut AppState, delivery: Delivery) {
@@ -495,6 +531,45 @@ mod tests {
         let effects = update(&mut s, ctrl_c);
         assert!(s.should_quit);
         assert!(matches!(effects.first(), Some(Effect::Quit)));
+    }
+
+    #[test]
+    fn push_message_appears_live() {
+        let mut s = AppState::new(120, 40);
+        update(
+            &mut s,
+            Action::Push(Event::Message {
+                from_fingerprint: "FPCAROL".to_owned(),
+                body: Sensitive::new("live!".to_owned()),
+            }),
+        );
+        assert_eq!(s.conversations.len(), 1);
+        assert_eq!(s.conversations[0].messages.len(), 1);
+    }
+
+    #[test]
+    fn push_peer_discovered_then_lost_is_idempotent() {
+        let mut s = AppState::new(120, 40);
+        let peer = PeerInfo {
+            fingerprint: "FPDAVE".to_owned(),
+            peer_id: "pid".to_owned(),
+            connected: true,
+        };
+        update(
+            &mut s,
+            Action::Push(Event::PeerDiscovered { peer: peer.clone() }),
+        );
+        update(&mut s, Action::Push(Event::PeerDiscovered { peer }));
+        assert_eq!(s.peers.len(), 1, "re-discovery must not duplicate");
+        assert_eq!(s.status.peer_count, 1);
+        update(
+            &mut s,
+            Action::Push(Event::PeerLost {
+                fingerprint: "FPDAVE".to_owned(),
+            }),
+        );
+        assert!(s.peers.is_empty());
+        assert_eq!(s.status.peer_count, 0);
     }
 
     #[test]
