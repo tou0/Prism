@@ -58,6 +58,21 @@ The **daemon holds the secrets**; the **client never holds a private key in plai
 - **M8** — Hardening (kill switch, ephemeral messages, fuzzing, audit prep).
 - **Contacts (address book)** — *priority TBD, slot around M4–M5*: a user-owned address book mapping a **locally-assigned** name to a **cryptographically-verified** fingerprint (Signal-style `add` / `verify`, spec §7), **persisted in the encrypted local database** (the same at-rest store introduced for message history). It is **not** self-declared names carried over the wire — nicknames are never transmitted and are not falsifiable-safe, so trusting them would be an impersonation vector. Until this lands, the TUI correctly shows the raw short fingerprint for peers/senders (M3 has no persistence and no verified names); once it exists, the TUI displays the local name in place of the fingerprint. Depends on the encrypted history/persistence store.
 
+## Long-term vision (post-core — direction, NOT commitment, NOT scheduled)
+> This section is deliberately **separate from the milestones above**. Nothing here is scheduled or approved for build. It records direction so future scoping has context. **Everything below is gated on M4 (DHT discovery) + M5 (NAT traversal / relays)** — reachability across the internet is the prerequisite for every future capability. Do **not** build any of this now (see "Out of scope").
+
+- **File / photo transfer** — a genuine extension of Prism's existing model: chunked, encrypted, resumable transfer of larger blobs over the **same session/transport** (Double Ratchet, existing network layer). The natural next capability once the core messaging network is solid. Depends on M4/M5 reachability like everything else.
+- **Real-time media (voice / video / screen-sharing)** — **NOT** an extension of the message protocol. Real-time media is a fundamentally different paradigm: continuous UDP/WebRTC-style flows, latency-over-reliability, SRTP-style media encryption (**not** the Double Ratchet), and its own NAT-traversal path. To be treated as a **distinct plugin/sub-project layered beside Prism** (the way SimpleX bolts WebRTC alongside its messaging protocol), *if ever pursued*. Explicitly **out of scope for the core roadmap**.
+
+### Relay model (M5 design notes — intents to revisit at M5 scoping, not commitments)
+Consolidated decisions made across the project so they resurface when M5 is scoped. **M4 stays DHT-discovery only** (origin IP is exposed — minimized and documented; multi-hop anonymity via Tor is **M5b**).
+- **Relays serve TWO distinct purposes, not one:**
+  1. **NAT traversal** — reaching a peer behind CGNAT/symmetric NAT (the original M5 driver, via **Circuit Relay v2**).
+  2. **Privacy** — a relay that does **not** retain routing data ("non-retaining"), or ideally is **"blind"** (sees only an encrypted blob, not the sender↔recipient relationship, SimpleX-style). Rationale: P2P-direct **maximally** exposes the origin IP; a non-retaining/blind intermediary is what "drowns" the origin. **Honest limit:** a *single* relay still sees traffic in real time even if it drops logs afterwards — real origin-hiding needs **multiple hops** where no single relay knows both source and destination. That multi-hop anonymity is **Tor's job (M5b)**; single non-retaining relays only defend against *after-the-fact* seizure.
+- **User control** — the user **chooses** which relays they route through (trust is user-held, not imposed); ties into relay selection + reliability scoring.
+- **Reachability is the #1 viability risk** (spec): make relay hosting **easy** so there are many; support a designated **mailbox**; reciprocity is **non-monetary by design** (no paid/crypto model, unlike Session) — a deliberate ethical choice.
+- **Open question for M5:** are Prism's relays merely **non-retaining** (delete after delivery) or fully **blind** (never see the sender/recipient link at all)? **Decide at M5.**
+
 ## Out of scope (DO NOT build now)
 Groups, channels, whisper, roles; DHT / relays / offline before their milestone; anti-spam PoW (M7); onion routing / metadata privacy; advanced anti-coercion (plausible deniability, dead-man's switch); identity-key succession; post-quantum. **Do not anticipate these.**
 
