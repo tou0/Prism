@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use prism_core::{IdentityKeypair, Seed32};
-use prism_net::{spawn, InboundOutcome, InboundSink, NetError, PeerKey};
+use prism_net::{spawn, InboundOutcome, InboundSink, NetConfig, NetError, PeerKey};
 use tokio::sync::{mpsc, oneshot};
 
 /// A sink that records deliveries and answers with a fixed verdict.
@@ -23,6 +23,9 @@ impl InboundSink for RecordingSink {
         let _ = self.tx.send((from, sealed));
         let _ = reply.send(self.outcome);
     }
+    fn validate_locator(&self, _key: &[u8], _value: &[u8]) -> bool {
+        false
+    }
 }
 
 /// A sink that ignores everything (for the initiator side).
@@ -31,10 +34,50 @@ impl InboundSink for NullSink {
     fn deliver(&self, _from: PeerKey, _sealed: Vec<u8>, reply: oneshot::Sender<InboundOutcome>) {
         let _ = reply.send(InboundOutcome::Accepted);
     }
+    fn validate_locator(&self, _key: &[u8], _value: &[u8]) -> bool {
+        false
+    }
+}
+
+/// A sink that validates DHT locators the way the daemon does (via prism-core),
+/// so a DHT node stores valid records under FilterBoth.
+struct ValidatingSink;
+impl InboundSink for ValidatingSink {
+    fn deliver(&self, _from: PeerKey, _sealed: Vec<u8>, reply: oneshot::Sender<InboundOutcome>) {
+        let _ = reply.send(InboundOutcome::Accepted);
+    }
+    fn validate_locator(&self, key: &[u8], value: &[u8]) -> bool {
+        match <&[u8; 32]>::try_from(key) {
+            Ok(k) => prism_core::open_locator(value, k).is_ok(),
+            Err(_) => false,
+        }
+    }
 }
 
 fn seed(fill: u8) -> Seed32 {
     Seed32::from_bytes([fill; 32])
+}
+
+/// Transport-only config: no mDNS (CI-safe, deterministic) and no DHT — these
+/// tests exercise only the request/response transport contract.
+fn transport_only() -> NetConfig {
+    NetConfig {
+        enable_mdns: false,
+        enable_dht: false,
+        bootstrap: Vec::new(),
+        external_addrs: Vec::new(),
+    }
+}
+
+/// DHT config with mDNS OFF — simulating peers on *different* networks, whose
+/// only path to each other is the DHT (no shared LAN multicast).
+fn dht_only(bootstrap: Vec<String>) -> NetConfig {
+    NetConfig {
+        enable_mdns: false,
+        enable_dht: true,
+        bootstrap,
+        external_addrs: Vec::new(),
+    }
 }
 
 /// Poll a handle's listen addresses until one appears (bounded).
@@ -54,7 +97,13 @@ async fn first_listener(handle: &prism_net::NetHandle) -> String {
 async fn fetch_bundle_and_deliver_message_end_to_end() {
     let (rec_tx, mut rec_rx) = mpsc::unbounded_channel();
 
-    let (alice, _ja) = spawn(&seed(0xA1), Arc::new(NullSink), "/ip4/127.0.0.1/tcp/0").unwrap();
+    let (alice, _ja) = spawn(
+        &seed(0xA1),
+        Arc::new(NullSink),
+        "/ip4/127.0.0.1/tcp/0",
+        transport_only(),
+    )
+    .unwrap();
     let (bob, _jb) = spawn(
         &seed(0xB0),
         Arc::new(RecordingSink {
@@ -62,6 +111,7 @@ async fn fetch_bundle_and_deliver_message_end_to_end() {
             outcome: InboundOutcome::Accepted,
         }),
         "/ip4/127.0.0.1/tcp/0",
+        transport_only(),
     )
     .unwrap();
 
@@ -97,7 +147,13 @@ async fn fetch_bundle_and_deliver_message_end_to_end() {
 
 #[tokio::test]
 async fn delivering_to_an_undiscovered_peer_is_not_reachable() {
-    let (alice, _ja) = spawn(&seed(0xA1), Arc::new(NullSink), "/ip4/127.0.0.1/tcp/0").unwrap();
+    let (alice, _ja) = spawn(
+        &seed(0xA1),
+        Arc::new(NullSink),
+        "/ip4/127.0.0.1/tcp/0",
+        transport_only(),
+    )
+    .unwrap();
     // A peer we never discovered and whose address we never learned.
     let stranger =
         PeerKey::from_bytes(*IdentityKeypair::from_seed(&seed(0x77)).public().as_bytes());
@@ -111,7 +167,13 @@ async fn delivering_to_an_undiscovered_peer_is_not_reachable() {
 #[tokio::test]
 async fn a_rejecting_receiver_surfaces_a_request_failure() {
     let (rec_tx, _rec_rx) = mpsc::unbounded_channel();
-    let (alice, _ja) = spawn(&seed(0xA1), Arc::new(NullSink), "/ip4/127.0.0.1/tcp/0").unwrap();
+    let (alice, _ja) = spawn(
+        &seed(0xA1),
+        Arc::new(NullSink),
+        "/ip4/127.0.0.1/tcp/0",
+        transport_only(),
+    )
+    .unwrap();
     let (bob, _jb) = spawn(
         &seed(0xB0),
         Arc::new(RecordingSink {
@@ -119,6 +181,7 @@ async fn a_rejecting_receiver_surfaces_a_request_failure() {
             outcome: InboundOutcome::Rejected,
         }),
         "/ip4/127.0.0.1/tcp/0",
+        transport_only(),
     )
     .unwrap();
 
@@ -136,4 +199,72 @@ async fn a_rejecting_receiver_surfaces_a_request_failure() {
 /// The Ed25519 public key bytes an identity seed yields (= its `PeerKey`).
 fn bob_peer_key_of(seed: &Seed32) -> PeerKey {
     PeerKey::from_bytes(*IdentityKeypair::from_seed(seed).public().as_bytes())
+}
+
+/// The primary M4 test: two peers on *different* networks (mDNS off, so no
+/// shared LAN) publish and discover each other **through the DHT only**, via a
+/// bootstrap node. Alice publishes a signed locator; Bob — who never saw Alice
+/// on a LAN and only knows the bootstrap node — resolves it and validates it to
+/// Alice's identity.
+#[tokio::test]
+async fn peers_discover_each_other_through_the_dht_only() {
+    // A bootstrap DHT server.
+    let (boot, _jboot) = spawn(
+        &seed(0xB7),
+        Arc::new(ValidatingSink),
+        "/ip4/127.0.0.1/tcp/0",
+        dht_only(Vec::new()),
+    )
+    .unwrap();
+    let boot_addr = first_listener(&boot).await;
+    // Advertise its address → Kademlia server mode, so it stores/serves records.
+    boot.add_external_address(boot_addr.clone()).await.unwrap();
+    let boot_entry = format!("{boot_addr}/p2p/{}", boot.local_peer_id());
+
+    // Alice and Bob know only the bootstrap node (no LAN, no direct knowledge
+    // of each other).
+    let (alice, _ja) = spawn(
+        &seed(0xA1),
+        Arc::new(ValidatingSink),
+        "/ip4/127.0.0.1/tcp/0",
+        dht_only(vec![boot_entry.clone()]),
+    )
+    .unwrap();
+    let (bob, _jb) = spawn(
+        &seed(0xB0),
+        Arc::new(ValidatingSink),
+        "/ip4/127.0.0.1/tcp/0",
+        dht_only(vec![boot_entry]),
+    )
+    .unwrap();
+
+    // Alice signs a locator naming (an opaque, here-loopback) address.
+    let alice_identity = IdentityKeypair::from_seed(&seed(0xA1));
+    let alice_addr = first_listener(&alice).await;
+    let value =
+        prism_core::seal_locator(&alice_identity, std::slice::from_ref(&alice_addr), 1).unwrap();
+    let key = prism_core::own_locator_key(&alice_identity.public());
+
+    // Let the bootstrap connections settle before publishing/resolving.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Republish + resolve until the DHT converges (bounded, ~6 s worst case).
+    let mut found = None;
+    for _ in 0..60 {
+        let _ = alice.publish_locator(key, value.clone()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(Some(bytes)) = bob.resolve_locator(key).await {
+            found = Some(bytes);
+            break;
+        }
+    }
+
+    let bytes = found.expect("Bob must resolve Alice's locator through the DHT");
+    let loc = prism_core::open_locator(&bytes, &key).expect("the resolved locator is valid");
+    assert_eq!(
+        loc.identity(),
+        &alice_identity.public(),
+        "the resolved locator carries Alice's authenticated identity"
+    );
+    assert_eq!(loc.addrs(), &[alice_addr]);
 }

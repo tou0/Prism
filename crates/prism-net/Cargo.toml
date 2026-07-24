@@ -21,6 +21,7 @@ libp2p = { version = "0.56", default-features = false, features = [
     "noise",
     "yamux",
     "mdns",
+    "kad",
     "request-response",
     "cbor",
     "macros",

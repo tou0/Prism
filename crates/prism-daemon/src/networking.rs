@@ -45,6 +45,17 @@ impl InboundSink for CoreInboundSink {
             }
         }
     }
+
+    fn validate_locator(&self, key: &[u8], value: &[u8]) -> bool {
+        // The crypto lives here (prism-core), never in prism-net. A DHT key is
+        // always our 32-byte derived key; anything else is malformed. Full
+        // validation (signature, strict key check, key/fingerprint binding) is
+        // `open_locator` — a fast, pure function, so this runs inline safely.
+        match <&[u8; 32]>::try_from(key) {
+            Ok(dht_key) => prism_core::open_locator(value, dht_key).is_ok(),
+            Err(_) => false,
+        }
+    }
 }
 
 /// The short (handle) fingerprint for a peer's key, or `None` if the bytes are
@@ -100,7 +111,7 @@ pub async fn ensure_up(state: &AppState, seed: Seed32) -> Result<(), String> {
     let sink = Arc::new(CoreInboundSink {
         core_tx: core.sender(),
     });
-    let (net, _join) = prism_net::spawn(&seed, sink, &state.listen_addr)
+    let (net, _join) = prism_net::spawn(&seed, sink, &state.listen_addr, state.net_config.clone())
         .map_err(|e| format!("failed to start networking: {e}"))?;
     net.set_bundle(bundle)
         .await

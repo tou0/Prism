@@ -8,9 +8,11 @@
 //! never stall discovery or in-flight requests (the deadlock-prevention
 //! invariant). Outbound commands arrive over a channel from the daemon.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use futures::stream::{FuturesUnordered, StreamExt};
+use libp2p::kad::store::RecordStore;
+use libp2p::kad::{self, GetRecordOk, QueryId, QueryResult, Quorum, Record, RecordKey};
 use libp2p::request_response::{
     Event as RrEvent, Message as RrMessage, OutboundRequestId, ResponseChannel,
 };
@@ -22,7 +24,11 @@ use tracing::{debug, warn};
 use crate::behaviour::{PrismBehaviour, PrismBehaviourEvent};
 use crate::identity::{peer_id_from_key, peer_key_from_id, PeerKey};
 use crate::protocol::{WireRequest, WireResponse, WIRE_VERSION};
-use crate::{InboundSink, NetError, PeerRecord};
+use crate::{DhtStatus, DiscoverySource, InboundSink, NetError, PeerRecord};
+
+/// Reply channel for a `resolve_locator` query: the opaque record bytes, or
+/// `None` if the query finished without finding a record.
+type ResolveReply = oneshot::Sender<Result<Option<Vec<u8>>, NetError>>;
 
 /// A command from the daemon to the swarm task. Each carries a `oneshot` for
 /// the reply the daemon awaits.
@@ -47,9 +53,30 @@ pub(crate) enum Command {
     /// Update the cached bundle served to peers that request it.
     SetBundle { bundle: Vec<u8> },
     /// Manually seed a peer's address (out-of-band hint; mDNS remains the
-    /// automatic discovery mechanism). Used for deterministic tests and a
-    /// future designated-peer feature.
-    AddPeerAddress { key: PeerKey, addr: String },
+    /// automatic discovery mechanism). Used for deterministic tests, a future
+    /// designated-peer feature, and DHT-resolved peers (with `source: Dht`).
+    AddPeerAddress {
+        key: PeerKey,
+        addr: String,
+        source: DiscoverySource,
+    },
+    /// Publish our signed locator record to the DHT (opaque signed bytes).
+    PublishLocator {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        reply: oneshot::Sender<Result<(), NetError>>,
+    },
+    /// Resolve a locator by its DHT key; returns opaque record bytes or `None`.
+    ResolveLocator { key: Vec<u8>, reply: ResolveReply },
+    /// Trigger a Kademlia bootstrap via the configured bootstrap peers.
+    Bootstrap {
+        reply: oneshot::Sender<Result<(), NetError>>,
+    },
+    /// Snapshot the DHT's local state.
+    DhtStatus { reply: oneshot::Sender<DhtStatus> },
+    /// Advertise a globally-routable address as ours (confirms it to the swarm,
+    /// which upgrades Kademlia to server mode so we serve/store records).
+    AddExternalAddress { addr: String },
 }
 
 /// What a pending outbound request is waiting to resolve.
@@ -63,6 +90,7 @@ struct PeerEntry {
     peer_id: PeerId,
     addrs: Vec<Multiaddr>,
     connected: bool,
+    source: DiscoverySource,
 }
 
 /// The swarm task's owned state.
@@ -86,6 +114,17 @@ pub(crate) struct SwarmTask {
     current_bundle: Option<Vec<u8>>,
     /// Our own bound listen addresses.
     listen_addrs: Vec<Multiaddr>,
+    /// Whether the Kademlia DHT is enabled on this node.
+    dht_enabled: bool,
+    /// Bootstrap peers to add and dial on startup (peer id + transport addr).
+    bootstrap: Vec<(PeerId, Multiaddr)>,
+    /// DHT `get_record` queries awaiting a result.
+    pending_get: HashMap<QueryId, ResolveReply>,
+    /// DHT `put_record` queries awaiting a result.
+    pending_put: HashMap<QueryId, oneshot::Sender<Result<(), NetError>>>,
+    /// Distinct peers seen entering the routing table (approximate liveness for
+    /// `status`; never decremented — a coarse "have we joined?" signal).
+    dht_peers: HashSet<PeerId>,
 }
 
 impl SwarmTask {
@@ -93,6 +132,8 @@ impl SwarmTask {
         swarm: Swarm<PrismBehaviour>,
         sink: std::sync::Arc<dyn InboundSink>,
         cmd_rx: mpsc::Receiver<Command>,
+        dht_enabled: bool,
+        bootstrap: Vec<(PeerId, Multiaddr)>,
     ) -> Self {
         Self {
             swarm,
@@ -104,11 +145,17 @@ impl SwarmTask {
             pending_inbound: FuturesUnordered::new(),
             current_bundle: None,
             listen_addrs: Vec::new(),
+            dht_enabled,
+            bootstrap,
+            pending_get: HashMap::new(),
+            pending_put: HashMap::new(),
+            dht_peers: HashSet::new(),
         }
     }
 
     /// Run until the command channel closes (daemon shutdown).
     pub(crate) async fn run(mut self) {
+        self.start_bootstrap();
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => self.on_swarm_event(event),
@@ -143,6 +190,7 @@ impl SwarmTask {
                         peer_id: entry.peer_id.to_base58(),
                         addrs: entry.addrs.iter().map(Multiaddr::to_string).collect(),
                         connected: entry.connected,
+                        source: entry.source,
                     })
                     .collect();
                 let _ = reply.send(peers);
@@ -182,10 +230,136 @@ impl SwarmTask {
                 let _ = reply.send(self.listen_addrs.iter().map(Multiaddr::to_string).collect());
             }
             Command::SetBundle { bundle } => self.current_bundle = Some(bundle),
-            Command::AddPeerAddress { key, addr } => match addr.parse::<Multiaddr>() {
-                Ok(addr) => self.upsert_peer(key, peer_id_from_key(&key), Some(addr)),
+            Command::AddPeerAddress { key, addr, source } => match addr.parse::<Multiaddr>() {
+                Ok(addr) => self.upsert_peer(key, peer_id_from_key(&key), Some(addr), source),
                 Err(_) => warn!("ignoring unparseable peer address hint"),
             },
+            Command::PublishLocator { key, value, reply } => {
+                match self.swarm.behaviour_mut().kad.as_mut() {
+                    Some(kad) => {
+                        let record = Record::new(RecordKey::new(&key), value);
+                        match kad.put_record(record, Quorum::One) {
+                            Ok(id) => {
+                                self.pending_put.insert(id, reply);
+                            }
+                            Err(e) => {
+                                let _ = reply.send(Err(NetError::RequestFailed(e.to_string())));
+                            }
+                        }
+                    }
+                    None => {
+                        let _ = reply.send(Err(NetError::DhtDisabled));
+                    }
+                }
+            }
+            Command::ResolveLocator { key, reply } => {
+                match self.swarm.behaviour_mut().kad.as_mut() {
+                    Some(kad) => {
+                        let id = kad.get_record(RecordKey::new(&key));
+                        self.pending_get.insert(id, reply);
+                    }
+                    None => {
+                        let _ = reply.send(Err(NetError::DhtDisabled));
+                    }
+                }
+            }
+            Command::Bootstrap { reply } => {
+                let result = match self.swarm.behaviour_mut().kad.as_mut() {
+                    Some(kad) => kad
+                        .bootstrap()
+                        .map(|_| ())
+                        .map_err(|_| NetError::NoBootstrapPeers),
+                    None => Err(NetError::DhtDisabled),
+                };
+                let _ = reply.send(result);
+            }
+            Command::DhtStatus { reply } => {
+                let _ = reply.send(DhtStatus {
+                    enabled: self.dht_enabled,
+                    routing_peers: self.dht_peers.len(),
+                });
+            }
+            Command::AddExternalAddress { addr } => match addr.parse::<Multiaddr>() {
+                Ok(addr) => self.swarm.add_external_address(addr),
+                Err(_) => warn!("ignoring unparseable external address"),
+            },
+        }
+    }
+
+    /// Seed the configured bootstrap peers into Kademlia and kick off a
+    /// bootstrap query. A no-op if the DHT is disabled or no bootstrap peers
+    /// are configured (a lone node still runs — it just has no DHT entry
+    /// point, which is the documented "M4 must be joinable via --bootstrap").
+    fn start_bootstrap(&mut self) {
+        if self.bootstrap.is_empty() {
+            return;
+        }
+        let peers = std::mem::take(&mut self.bootstrap);
+        if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
+            for (peer, addr) in &peers {
+                kad.add_address(peer, addr.clone());
+            }
+            // Errors only with no known peers, which we just guarded against.
+            let _ = kad.bootstrap();
+        }
+    }
+
+    fn on_kad_event(&mut self, event: kad::Event) {
+        match event {
+            kad::Event::OutboundQueryProgressed { id, result, .. } => match result {
+                QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(peer_record))) => {
+                    // First record wins; the daemon validates it. Later records
+                    // for the same query find no waiting sender (harmless).
+                    if let Some(reply) = self.pending_get.remove(&id) {
+                        let _ = reply.send(Ok(Some(peer_record.record.value)));
+                    }
+                }
+                QueryResult::GetRecord(Ok(GetRecordOk::FinishedWithNoAdditionalRecord {
+                    ..
+                }))
+                | QueryResult::GetRecord(Err(_)) => {
+                    if let Some(reply) = self.pending_get.remove(&id) {
+                        let _ = reply.send(Ok(None));
+                    }
+                }
+                QueryResult::PutRecord(result) => {
+                    if let Some(reply) = self.pending_put.remove(&id) {
+                        let _ = reply.send(
+                            result
+                                .map(|_| ())
+                                .map_err(|e| NetError::RequestFailed(e.to_string())),
+                        );
+                    }
+                }
+                _ => {}
+            },
+            kad::Event::InboundRequest {
+                request:
+                    kad::InboundRequest::PutRecord {
+                        record: Some(record),
+                        ..
+                    },
+            } => {
+                // FilterBoth: nothing is auto-stored. Validate the record via
+                // prism-core (delegated through the sink — prism-net runs no
+                // crypto) before storing it on the network's behalf.
+                if self
+                    .sink
+                    .validate_locator(record.key.as_ref(), &record.value)
+                {
+                    if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
+                        if let Err(e) = kad.store_mut().put(record) {
+                            debug!(error = %e, "not storing a valid locator (store full)");
+                        }
+                    }
+                } else {
+                    debug!("rejected an invalid inbound DHT locator");
+                }
+            }
+            kad::Event::RoutingUpdated { peer, .. } => {
+                self.dht_peers.insert(peer);
+            }
+            _ => {}
         }
     }
 
@@ -204,7 +378,7 @@ impl SwarmTask {
                 for (peer_id, addr) in list {
                     if let Some(key) = peer_key_from_id(&peer_id) {
                         debug!(peer = %peer_id, "mDNS discovered");
-                        self.upsert_peer(key, Some(peer_id), Some(addr));
+                        self.upsert_peer(key, Some(peer_id), Some(addr), DiscoverySource::Mdns);
                     }
                 }
             }
@@ -217,6 +391,7 @@ impl SwarmTask {
                     }
                 }
             }
+            SwarmEvent::Behaviour(PrismBehaviourEvent::Kad(event)) => self.on_kad_event(event),
             SwarmEvent::Behaviour(PrismBehaviourEvent::Rr(RrEvent::Message {
                 peer,
                 message,
@@ -241,7 +416,10 @@ impl SwarmTask {
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 if let Some(key) = peer_key_from_id(&peer_id) {
-                    self.upsert_peer(key, Some(peer_id), None);
+                    // A connection without prior discovery (an inbound dial):
+                    // `source` is only applied if this is the first sighting;
+                    // an already-discovered peer keeps its mDNS/DHT source.
+                    self.upsert_peer(key, Some(peer_id), None, DiscoverySource::Manual);
                     if let Some(entry) = self.by_key.get_mut(&key) {
                         entry.connected = true;
                     }
@@ -356,8 +534,16 @@ impl SwarmTask {
         }
     }
 
-    /// Insert or update a peer entry, adding a `PeerId` and/or address.
-    fn upsert_peer(&mut self, key: PeerKey, peer_id: Option<PeerId>, addr: Option<Multiaddr>) {
+    /// Insert or update a peer entry, adding a `PeerId` and/or address. `source`
+    /// is recorded only on **first** sighting; a re-sighting keeps the original
+    /// discovery source (so a peer first found by mDNS stays tagged mDNS).
+    fn upsert_peer(
+        &mut self,
+        key: PeerKey,
+        peer_id: Option<PeerId>,
+        addr: Option<Multiaddr>,
+        source: DiscoverySource,
+    ) {
         let peer_id = peer_id
             .or_else(|| self.by_key.get(&key).map(|e| e.peer_id))
             .or_else(|| peer_id_from_key(&key));
@@ -369,6 +555,7 @@ impl SwarmTask {
             peer_id,
             addrs: Vec::new(),
             connected: false,
+            source,
         });
         entry.peer_id = peer_id;
         if let Some(addr) = addr {

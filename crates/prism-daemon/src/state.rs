@@ -80,6 +80,9 @@ pub struct AppState {
     pub unlocked: RwLock<Option<UnlockedIdentity>>,
     /// The networking subsystem, brought up on first unlock/init.
     pub net: RwLock<Option<NetworkHandles>>,
+    /// Networking configuration (discovery toggles, bootstrap peers, advertised
+    /// addresses), chosen at startup from CLI flags / the config file.
+    pub net_config: prism_net::NetConfig,
     /// Push-event fan-out to subscribed IPC connections. Subscribers call
     /// `events.subscribe()`; dropping a receiver auto-unsubscribes, so there is
     /// no registry to leak on disconnect.
@@ -88,8 +91,23 @@ pub struct AppState {
 
 impl AppState {
     /// State for a daemon serving the given keystore and session store, whose
-    /// swarm listens on `listen_addr`.
+    /// swarm listens on `listen_addr`, with default networking configuration.
     pub fn new(keystore_path: PathBuf, sessions_path: PathBuf, listen_addr: String) -> Self {
+        Self::with_net_config(
+            keystore_path,
+            sessions_path,
+            listen_addr,
+            prism_net::NetConfig::default(),
+        )
+    }
+
+    /// State with an explicit networking configuration.
+    pub fn with_net_config(
+        keystore_path: PathBuf,
+        sessions_path: PathBuf,
+        listen_addr: String,
+        net_config: prism_net::NetConfig,
+    ) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             keystore_path,
@@ -97,6 +115,7 @@ impl AppState {
             listen_addr,
             unlocked: RwLock::new(None),
             net: RwLock::new(None),
+            net_config,
             events,
         }
     }
