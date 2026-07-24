@@ -73,6 +73,29 @@ fn full_fingerprint(key: &PeerKey) -> Option<String> {
         .map(|id| id.fingerprint().full())
 }
 
+/// Resolve a peer by its short (handle) fingerprint via the DHT: fetch the
+/// signed locator, validate it (prism-core — signature, strict key check,
+/// key/fingerprint binding), seed its addresses for the dial path, and return
+/// the peer key. `None` if the DHT has no record or it fails validation.
+///
+/// A validated locator with an empty address set (a NAT-bound peer) still
+/// returns its key, but with nothing to dial — the caller then surfaces
+/// `NotReachable`, which is the honest M4 outcome (discovered, not connectable
+/// until relays land in M5).
+async fn resolve_via_dht(handles: &NetworkHandles, short_fp: &str) -> Option<PeerKey> {
+    let key = prism_core::dht_locator_key(short_fp);
+    let bytes = handles.net.resolve_locator(key).await.ok()??;
+    let locator = prism_core::open_locator(&bytes, &key).ok()?;
+    let peer_key = PeerKey::from_bytes(*locator.identity().as_bytes());
+    for addr in locator.addrs() {
+        let _ = handles
+            .net
+            .add_dht_peer_address(peer_key, addr.clone())
+            .await;
+    }
+    Some(peer_key)
+}
+
 /// Bring up the networking subsystem for the unlocked identity, if it is not
 /// already running. Idempotent: a second call is a no-op.
 ///
@@ -120,13 +143,59 @@ pub async fn ensure_up(state: &AppState, seed: Seed32) -> Result<(), String> {
     // Watch the peer list and push discover/lost events to subscribers.
     let peer_watch = crate::peer_watch::spawn_peer_watch(net.clone(), state.events.clone());
 
+    // Publish our signed DHT locator (M4), if the DHT is enabled. Sealed once
+    // here with a transient identity (the key is not held by the publish task),
+    // over only our globally-routable addresses.
+    let locator_publish = if state.net_config.enable_dht {
+        Some(start_locator_publish(&net, &seed, &state.net_config).await)
+    } else {
+        None
+    };
+
     info!(peer_id = net.local_peer_id(), "networking is up");
     *guard = Some(NetworkHandles {
         net,
         core,
         _peer_watch: peer_watch,
+        _locator_publish: locator_publish,
     });
     Ok(())
+}
+
+/// Seal our locator over our publishable addresses and spawn the re-publication
+/// task. The identity key is used only transiently here (to sign); the spawned
+/// task carries only the public signed bytes.
+async fn start_locator_publish(
+    net: &prism_net::NetHandle,
+    seed: &Seed32,
+    config: &prism_net::NetConfig,
+) -> tokio::task::JoinHandle<()> {
+    // Candidate addresses: explicitly-advertised externals plus bound listeners;
+    // filtered to the globally-routable set so nothing private reaches the DHT,
+    // then bounded to what a locator accepts (so sealing cannot fail).
+    let mut candidates = config.external_addrs.clone();
+    if let Ok(listeners) = net.listeners().await {
+        candidates.extend(listeners);
+    }
+    let mut addrs: Vec<String> = prism_net::public_addrs(&candidates)
+        .into_iter()
+        .filter(|a| a.len() <= prism_core::locator::MAX_ADDR_LEN)
+        .collect();
+    addrs.truncate(prism_core::locator::MAX_LOCATOR_ADDRS);
+
+    let identity = IdentityKeypair::from_seed(seed);
+    let published_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let key = prism_core::own_locator_key(&identity.public());
+    // seal_locator only fails on malformed input we control (address bounds);
+    // fall back to an identity-only (empty-address) locator on the unexpected.
+    let sealed = prism_core::seal_locator(&identity, &addrs, published_at)
+        .or_else(|_| prism_core::seal_locator(&identity, &[], published_at))
+        .unwrap_or_default();
+
+    crate::locator_publish::spawn_locator_publish(net.clone(), key, sealed)
 }
 
 /// A `Sensitive` body cannot be borrowed as bytes without exposing it; do so
@@ -150,7 +219,8 @@ pub async fn handle_send(state: &AppState, to: String, body: prism_proto::Sensit
         };
     };
 
-    // Resolve the handle to a discovered peer by matching the short fingerprint.
+    // Resolve the handle to a discovered peer by matching the short fingerprint,
+    // first on the LAN (mDNS), then — if not found — via the DHT (M4).
     let peers = match handles.net.peers().await {
         Ok(peers) => peers,
         Err(e) => {
@@ -159,13 +229,16 @@ pub async fn handle_send(state: &AppState, to: String, body: prism_proto::Sensit
             }
         }
     };
-    let Some(record) = peers
+    let peer_key = match peers
         .into_iter()
         .find(|p| short_fingerprint(&p.key).as_deref() == Some(target_fp))
-    else {
-        return Response::NotReachable { handle: to };
+    {
+        Some(record) => record.key,
+        None => match resolve_via_dht(handles, target_fp).await {
+            Some(key) => key,
+            None => return Response::NotReachable { handle: to },
+        },
     };
-    let peer_key = record.key;
     let peer_bytes = *peer_key.as_bytes();
 
     // Fetch the peer's bundle only on first contact (no session yet).

@@ -66,6 +66,9 @@ pub struct NetworkHandles {
     /// discover/lost events). Kept so it lives exactly as long as networking;
     /// dropped with these handles on daemon shutdown.
     pub _peer_watch: tokio::task::JoinHandle<()>,
+    /// The DHT locator re-publication task (M4). Kept for the same lifetime;
+    /// absent when the DHT is disabled.
+    pub _locator_publish: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Shared daemon state, one per process, behind an `Arc`.

@@ -10,6 +10,7 @@
 //! here so they can be driven directly by tests.
 
 pub mod events;
+pub mod locator_publish;
 pub mod networking;
 pub mod peer_watch;
 pub mod server;

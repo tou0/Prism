@@ -29,6 +29,21 @@ struct Args {
     /// Multiaddr the swarm listens on for LAN peers.
     #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")]
     listen: String,
+    /// A DHT bootstrap node, `…/p2p/<peer-id>` (repeatable). No bootstrap nodes
+    /// are hard-coded; supply your own (e.g. a self-hosted node) to join a DHT.
+    #[arg(long = "bootstrap")]
+    bootstrap: Vec<String>,
+    /// A globally-routable multiaddr to advertise as ours (repeatable). Set on a
+    /// public/VPS node so it publishes a reachable, server-mode DHT locator.
+    #[arg(long = "external-address")]
+    external_address: Vec<String>,
+    /// Disable mDNS LAN discovery. Recommended on WAN-exposed / headless nodes
+    /// (a public bootstrap node has no LAN peers); also removes the mDNS socket.
+    #[arg(long = "no-mdns")]
+    no_mdns: bool,
+    /// Disable the Kademlia DHT (LAN-only node, mDNS only).
+    #[arg(long = "no-dht")]
+    no_dht: bool,
 }
 
 fn main() -> Result<()> {
@@ -69,11 +84,23 @@ async fn run(args: Args) -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("sessions.prs"))
     });
 
+    let net_config = prism_net::NetConfig {
+        enable_mdns: !args.no_mdns,
+        enable_dht: !args.no_dht,
+        bootstrap: args.bootstrap,
+        external_addrs: args.external_address,
+    };
+
     let listener = bind_secure(&socket_path)
         .with_context(|| format!("binding IPC socket at {}", socket_path.display()))?;
     // Unlink the socket file on shutdown.
     let _guard = SocketGuard::new(socket_path.clone());
-    let state = Arc::new(AppState::new(keystore_path, sessions_path, args.listen));
+    let state = Arc::new(AppState::with_net_config(
+        keystore_path,
+        sessions_path,
+        args.listen,
+        net_config,
+    ));
     info!(socket = %socket_path.display(), "prismd is listening");
 
     tokio::select! {
