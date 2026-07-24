@@ -233,8 +233,13 @@ pub async fn handle_send(state: &AppState, to: String, body: prism_proto::Sensit
         .into_iter()
         .find(|p| short_fingerprint(&p.key).as_deref() == Some(target_fp))
     {
-        Some(record) => record.key,
-        None => match resolve_via_dht(handles, target_fp).await {
+        // Discovered with a dialable address — send directly.
+        Some(record) if !record.addrs.is_empty() => record.key,
+        // Either undiscovered, or discovered without a dialable address: a peer
+        // we hold an open (peer-initiated or bootstrap) connection to but no
+        // recorded address for. Resolve via the DHT, which validates the signed
+        // locator and seeds its addresses so the dial can proceed.
+        _ => match resolve_via_dht(handles, target_fp).await {
             Some(key) => key,
             None => return Response::NotReachable { handle: to },
         },
@@ -355,7 +360,12 @@ pub async fn handle_status(state: &AppState) -> Response {
     let mut candidates = state.net_config.external_addrs.clone();
     candidates.extend(listen_addrs.iter().cloned());
     let published_addrs = if state.net_config.enable_dht {
-        prism_net::public_addrs(&candidates)
+        // Dedup so the display matches the sealed locator (external addrs and
+        // listeners can overlap); the locator itself already dedups internally.
+        let mut a = prism_net::public_addrs(&candidates);
+        a.sort();
+        a.dedup();
+        a
     } else {
         Vec::new()
     };

@@ -295,6 +295,19 @@ impl SwarmTask {
             return;
         }
         let peers = std::mem::take(&mut self.bootstrap);
+        // Record each bootstrap peer's address in the peer table too — not only
+        // in Kademlia — so it is a dialable messaging peer, not merely a DHT
+        // entry point (a bootstrap node is often also a reachable contact).
+        for (peer, addr) in &peers {
+            if let Some(key) = peer_key_from_id(peer) {
+                self.upsert_peer(
+                    key,
+                    Some(*peer),
+                    Some(addr.clone()),
+                    DiscoverySource::Manual,
+                );
+            }
+        }
         if let Some(kad) = self.swarm.behaviour_mut().kad.as_mut() {
             for (peer, addr) in &peers {
                 kad.add_address(peer, addr.clone());
