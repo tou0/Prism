@@ -1,14 +1,23 @@
-# Prism networking — M2b (local networked messaging)
+# Prism networking — M2b (local) + M4 (DHT discovery)
 
-M2b makes two `prismd` instances on the **same LAN** discover each other and
-exchange real end-to-end-encrypted messages. Discovery is mDNS only; delivery
-is synchronous (both peers online); there is no DHT, no NAT traversal, no
-relays, and no offline store-and-forward (all later milestones).
+Two discovery layers coexist:
+
+- **M2b (LAN)** — two `prismd` instances on the **same LAN** discover each other
+  via mDNS and exchange real end-to-end-encrypted messages. Delivery is
+  synchronous (both peers online).
+- **M4 (DHT)** — off-LAN discovery via a libp2p **Kademlia** DHT. A node
+  publishes a **signed locator record** keyed by its fingerprint; another node
+  resolves it by fingerprint, from anywhere on the internet. See
+  [DHT discovery (M4)](#dht-discovery-m4) below.
+
+Still later milestones: NAT traversal / relays (M5), Tor (M5b), offline
+store-and-forward (M6). **After M4 two nodes may _discover_ each other yet not
+always _connect_** (no NAT traversal yet) — expected, not a bug.
 
 Crates: `prism-net` (libp2p transport, this document), `prism-daemon` (wiring),
 `prism-proto` (IPC messages), `prism-cli` (`send` / `inbox` / `peers` /
-`status`). The session cryptography is entirely `prism-core` (see
-`docs/sessions.md`).
+`resolve` / `status`). The session cryptography is entirely `prism-core` (see
+`docs/sessions.md`), as is locator sealing/validation (below).
 
 ## Task architecture (the actor model)
 
@@ -24,8 +33,9 @@ The daemon runs the minimum number of owners, communicating over channels:
 ```
 
 1. **Swarm task** (async) — the sole owner of the libp2p `Swarm`: mDNS
-   discovery, the request/response protocol, the peer table. It never blocks
-   its poll loop.
+   discovery, the Kademlia DHT (M4), the request/response protocol, and the
+   peer table. It never blocks its poll loop (DHT record validation is a fast
+   pure signature check, so it runs inline; see [DHT discovery](#dht-discovery-m4)).
 2. **IPC accept-loop** (async) — unchanged from M0; each connection handler
    translates a request into channel round-trips.
 3. **Core session thread** (a dedicated OS thread) — the sole owner of the
@@ -114,6 +124,68 @@ justified exception, and it is confined to a single function.
 - First contact fetches the peer's bundle (to establish a session); subsequent
   messages skip it. A bundle with 20 one-time keys is served; exhaustion falls
   back to the reusable fallback key (`docs/sessions.md`).
+
+## DHT discovery (M4)
+
+Off-LAN discovery uses a libp2p **Kademlia** behaviour (`/prism/kad/1.0.0`,
+protobuf-over-Noise) alongside mDNS. Both `mdns` and `kad` are wrapped in
+`Toggle`, so `--no-mdns` never opens the multicast socket and `--no-dht`
+installs no DHT handler.
+
+**Signed locator records.** A node advertises itself with a *locator*: its
+Ed25519 identity public key plus a bounded set of globally-routable addresses,
+**Ed25519-signed**. It is keyed in the DHT by the identity fingerprint. The
+record is **built and validated entirely in `prism-core`** (`seal_locator` /
+`open_locator`); `prism-net` carries opaque bytes and never touches application
+crypto. On ingestion, every record is validated before it is stored on behalf
+of the network, via `InboundSink::validate_locator` → `prism_core::open_locator`
+(verify signature, strict key validation — reject zero/low-order/off-curve
+points — and check the key⇄fingerprint binding). The store uses
+`StoreInserts::FilterBoth`: **nothing is auto-stored**; only records that pass
+validation are kept. (Unlike an inbound *message*, validation is a fast pure
+signature check, so it runs inline on the swarm poll loop rather than through
+the core thread.)
+
+**Publish / resolve.** On startup (DHT enabled) the daemon seals its locator
+**once** — the identity key signs transiently; the re-publication task
+(`locator_publish.rs`) then holds only the public signed bytes and re-publishes
+on an interval (a fast initial cadence to cover the pre-bootstrap window, then
+steady-state under the record TTL). Resolution happens two ways: `prism resolve
+<handle>` (explicit), and as a **fallback in `send`** — when a handle is not
+found on the LAN, the daemon resolves its locator by fingerprint, validates it,
+seeds the addresses, and dials.
+
+**Bootstrap.** A DHT is joined via bootstrap nodes given as `--bootstrap
+<multiaddr>/p2p/<peer-id>` (repeatable) or the equivalent config. **No bootstrap
+nodes are hard-coded** — the compiled binary ships an empty default
+(anti-capture); the manual path always works standalone (M4 alone is joinable).
+Addresses are **IP multiaddrs only** — deliberately no `/dns/`, to avoid pulling
+in a DNS resolver and widening the hickory surface. Ergonomic community
+bootstrap lists are M4b. A *bootstrap node* is a DHT entry point (ideally a
+public-IP node run with `--no-mdns`); it is **not** a relay (that is M5).
+
+**Client vs server.** A node that advertises an external address
+(`--external-address`) becomes a Kademlia **server** (it stores and serves
+records); a node with only private/loopback addresses stays a **client** (it
+publishes and queries but is not asked to store others' records).
+
+**IP hygiene (honest posture, spec §13).** `public_addrs` (prism-net owns
+multiaddr parsing) drops loopback, private (RFC 1918), link-local, and CGNAT
+addresses, so **only globally-routable addresses are ever published**. A node
+with no routable address publishes an **identity-only** locator: discoverable,
+but not directly connectable until relays (M5) — *discovery is not
+reachability*. `prism status` shows exactly what is published (`published:`),
+and `prism resolve` says plainly when a peer advertises no reachable address.
+
+> **Honest IP note.** Joining the public DHT exposes your IP to DHT peers.
+> P2P removes the central server; it does **not** anonymize network activity
+> (Tor is M5b). Prism publishes only globally-routable addresses and lets the
+> user see what is published — it never claims to hide your IP.
+
+**Hardening scope.** M4 ships **cryptographic record validation only**.
+Anti-Sybil (PoW-bound node IDs) and anti-Eclipse (IP/subnet diversity,
+disjoint-path lookups) hardening need kad internals (stock `libp2p-kad` is
+single-path) and are a dedicated effort in **M7**, not bolted onto M4.
 
 ## No plaintext on disk
 

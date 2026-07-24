@@ -9,16 +9,19 @@ does **not** promise "100% secure" or "untraceable" — it maximizes protection
 and communicates its limits honestly. See [`docs/specification.md`](docs/specification.md)
 for the full design.
 
-> **Status: milestone M3 (interactive TUI).** `prism chat` (or bare `prism`)
-> opens a **ratatui/crossterm terminal interface** over the M2b networked
-> messaging: a conversation list, discovered peers, a chat view, and a network
-> panel, with **arrow-key-first navigation** (mouse as a complement) and
-> **real-time push** — incoming messages and peer discovery appear on their own,
-> delivered over a new additive daemon→client subscription (the one-shot
-> `send`/`inbox`/`peers`/`status` commands are unchanged). Messages are
-> **ephemeral / RAM-only** (nothing decrypted is written to disk) and the UI
-> keeps the terminal's own background, so a transparent/light/dark theme is
-> preserved. Still **no DHT, NAT traversal, relays, offline delivery, or message
+> **Status: milestone M4 (DHT discovery).** Nodes now find each other **off the
+> LAN** through a libp2p **Kademlia DHT**, coexisting with mDNS. A node publishes
+> a **signed locator record** (its identity key + globally-routable addresses,
+> Ed25519-signed) keyed by fingerprint; another node resolves it by fingerprint
+> — `prism resolve <handle>`, and automatically as a fallback in `send`. A DHT is
+> joined via `--bootstrap` entry points (**no bootstrap nodes are hard-coded**;
+> the manual path stands alone). **Honest posture:** joining the public DHT
+> exposes your IP to DHT peers — P2P removes the central server, it does **not**
+> anonymize you (Tor is a later milestone); only globally-routable addresses are
+> published, and `status` shows exactly what. **After M4, two nodes may
+> _discover_ each other yet not always _connect_** — NAT traversal / relays are
+> M5. The M3 `prism chat` TUI (arrow-first, real-time push) and M2b LAN messaging
+> are unchanged. Still **no NAT traversal, relays, offline delivery, or message
 > history** — those are later milestones.
 
 ## Workspace layout
@@ -27,7 +30,7 @@ for the full design.
 |---|---|
 | `prism-core` | Core types, identity, encrypted sessions (vodozemac), keystore, ratchet store (no network/UI deps). |
 | `prism-proto` | IPC message types and the framed serde codec. |
-| `prism-net` | libp2p networking layer: mDNS discovery + Noise request/response (opaque bytes only; no crypto). |
+| `prism-net` | libp2p networking layer: mDNS + Kademlia DHT discovery, Noise request/response (opaque bytes only; no application crypto — it validates locator *shape*, and delegates signature/key checks to `prism-core`). |
 | `prism-daemon` | Background daemon `prismd`: holds keys, runs the network, exposes the IPC socket. |
 | `prism-cli` | Thin client `prism`: one-shot commands and the interactive TUI (`chat`), over IPC. |
 
@@ -67,8 +70,9 @@ cargo run --bin prism -- init             # create an identity (interactive)
 cargo run --bin prism -- whoami           # show the unlocked identity
 cargo run --bin prism -- unlock           # unlock after a daemon restart
 cargo run --bin prism -- restore          # recreate an identity from a recovery phrase
-cargo run --bin prism -- status           # network + identity status
-cargo run --bin prism -- peers            # peers discovered on the LAN
+cargo run --bin prism -- status           # network + identity status (incl. DHT)
+cargo run --bin prism -- peers            # discovered peers (mDNS / DHT / manual)
+cargo run --bin prism -- resolve <handle> # find a peer off-LAN via the DHT
 cargo run --bin prism -- send <handle> "hi"  # send an encrypted message
 cargo run --bin prism -- inbox            # show and drain received messages
 cargo run --bin prism -- chat             # interactive TUI (also the default: bare `prism`)
@@ -80,11 +84,30 @@ your identity; without it, a lost passphrase means a lost identity, which is
 the point). `init`/`restore` refuse to overwrite an existing keystore unless
 `--force` is given.
 
-To message: run two unlocked daemons on the same LAN; each sees the other under
-`peers`, then `send <nick#fingerprint> "..."` delivers an end-to-end-encrypted
-message that appears in the recipient's `inbox`. Both peers must be online —
-delivery is synchronous and nothing is queued (offline delivery is a later
-milestone). See [`docs/net.md`](docs/net.md).
+To message on a LAN: run two unlocked daemons on the same network; each sees the
+other under `peers`, then `send <nick#fingerprint> "..."` delivers an
+end-to-end-encrypted message that appears in the recipient's `inbox`. Both peers
+must be online — delivery is synchronous and nothing is queued (offline delivery
+is a later milestone).
+
+To discover **off-LAN** via the DHT, point nodes at one or more bootstrap entry
+points (no bootstrap nodes are baked in):
+
+```sh
+# A public entry point (a VPS with a routable IP): DHT server, no LAN peers.
+cargo run --bin prismd -- --listen /ip4/0.0.0.0/tcp/4001 \
+  --external-address /ip4/<PUBLIC_IP>/tcp/4001 --no-mdns
+
+# Another node joins by bootstrapping to it, then resolves a handle:
+cargo run --bin prismd -- --bootstrap /ip4/<PUBLIC_IP>/tcp/4001/p2p/<PEER_ID>
+cargo run --bin prism  -- resolve <nick#fingerprint>
+```
+
+`resolve` finds and validates the peer's signed locator and prints the addresses
+it publishes (or says plainly when it advertises none — discoverable but not yet
+directly connectable, since NAT traversal is M5). Bootstrap addresses are **IP
+multiaddrs only** (no `/dns/`). See [`docs/net.md`](docs/net.md) for the locator
+format, IP-hygiene rules, and the honest IP posture.
 
 Or just run `prism chat` (or bare `prism`) for the interactive TUI: pick a peer
 from the discovered list, open a conversation, and type — incoming messages
@@ -94,7 +117,9 @@ terminal's own background (transparent/light/dark all work). Messages live in
 memory only and are gone when you quit.
 
 Both binaries accept `--socket <PATH>`; the daemon also accepts
-`--keystore <PATH>`, `--sessions <PATH>`, and `--listen <MULTIADDR>`.
+`--keystore <PATH>`, `--sessions <PATH>`, `--listen <MULTIADDR>`, and the M4 DHT
+flags `--bootstrap <MULTIADDR/p2p/ID>` (repeatable), `--external-address
+<MULTIADDR>` (repeatable), `--no-mdns`, and `--no-dht`.
 
 ## License
 
