@@ -187,6 +187,16 @@ Anti-Sybil (PoW-bound node IDs) and anti-Eclipse (IP/subnet diversity,
 disjoint-path lookups) hardening need kad internals (stock `libp2p-kad` is
 single-path) and are a dedicated effort in **M7**, not bolted onto M4.
 
+**Testing off-LAN discovery locally.** The full send-over-DHT path cannot be
+tested over loopback (IP hygiene strips loopback before publication, so no
+dialable address is ever advertised). `scripts/dht-wan-test.sh` builds a
+miniature WAN instead — two rootless Linux network namespaces joined by a veth,
+each holding one globally-routable-looking IP (8.8.8.2 / 8.8.8.3) that passes
+hygiene yet routes only to its peer — and asserts that two daemons (mDNS off,
+one bootstrapping to the other) discover each other purely through the DHT and
+exchange messages both directions. It is a manual harness, not a CI job: it
+needs unprivileged user namespaces, which many CI kernels disable.
+
 ## No plaintext on disk
 
 Decrypted messages live only in the core thread's RAM inbox for the process's
