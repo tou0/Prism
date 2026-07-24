@@ -9,6 +9,7 @@
 pub mod bundle;
 pub mod identity;
 pub mod keystore;
+pub mod locator;
 pub mod recovery;
 pub mod secret;
 pub mod session;
@@ -19,6 +20,9 @@ pub mod validate;
 pub use identity::{
     validate_nick, BadSignature, Fingerprint, IdentityKeypair, NickError, PublicIdentity,
     NICK_MAX_CHARS, SHORT_FINGERPRINT_LEN, SIGNATURE_LEN,
+};
+pub use locator::{
+    dht_locator_key, open_locator, own_locator_key, seal_locator, DhtLocator, LocatorError,
 };
 pub use secret::{Passphrase, RngError, Seed32};
 pub use validate::KeyRejection;
