@@ -2,13 +2,15 @@
 # cargo-audit configuration (read by `cargo audit` and the CI audit-check job).
 # Mirrors the ignore list in deny.toml — see that file and docs/net.md for the
 # full rationale. These are TRANSITIVE advisories with no in-semver fix
-# (libp2p-mdns 0.48 pins hickory-proto 0.25.2). Ratified 2026-07-22 for M2b's
-# LOCAL perimeter only. ==> M4 BLOCKER: re-open before the DHT exposes the node
-# globally (a LAN-only DoS becomes internet-wide there).
+# (libp2p-mdns 0.48 pins hickory-proto 0.25.2). ==> M4 GATE RESOLVED 2026-07-24:
+# the hickory advisories are NOT WAN/DHT-reachable (hickory is reached only via
+# libp2p-mdns; kad has no hickory/DNS dep; no `dns` transport). WAN-exposed nodes
+# run `--no-mdns`. Evidence: docs/net.md §Supply chain. Drop when libp2p-mdns
+# adopts hickory-proto >= 0.26.1.
 [advisories]
 ignore = [
-    "RUSTSEC-2026-0118", # hickory NSEC3/DNSSEC loop — unreachable via mDNS feature
-    "RUSTSEC-2026-0119", # hickory O(n^2) encode — CPU DoS, LAN-scoped, no fix yet
+    "RUSTSEC-2026-0118", # hickory NSEC3/DNSSEC loop — NOT COMPILED (no dnssec feature)
+    "RUSTSEC-2026-0119", # hickory O(n^2) encode — not WAN/DHT-reachable; encode uses our own records only
     "RUSTSEC-2024-0436", # paste unmaintained — compile-time only, no replacement
     "RUSTSEC-2026-0002", # M3: lru IterMut unsound (Miri) — via ratatui 0.29 (pins lru 0.12); local client only
 ]

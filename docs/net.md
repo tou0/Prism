@@ -165,33 +165,87 @@ by libp2p 0.56's transitive dependencies: `base45` (via `multiaddr` →
 `multibase`) uses `slice_as_chunks`, stabilized in 1.88; `icu_*` (via `url` →
 `idna`) require 1.86. Verified by the CI `msrv` job.
 
-## Supply chain (documented risk-acceptances — PENDING RATIFICATION)
+## Supply chain (documented risk-acceptances)
 
 > The consolidated index of *all* deferred advisories (networking and beyond)
 > lives in [`docs/security-debt.md`](security-debt.md); the networking ones are
 > detailed below.
 
-> **M4 BLOCKER (ratified 2026-07-22).** The advisory ignores below are accepted
-> **only** for M2b's local perimeter. A LAN-only DoS becomes internet-wide the
-> moment M4's DHT exposes the node globally, so **these ignores MUST be
-> re-opened and resolved before M4 ships** (upgrade hickory once libp2p bumps
-> it, or otherwise mitigate). Do not carry them past the local-network
-> milestone unchanged.
+> **M4 gate — RESOLVED (investigated 2026-07-24).** The M2b acceptance of the
+> two hickory advisories was scoped to a LAN-only perimeter, with a standing
+> requirement to re-open them before M4's DHT exposes the node to the WAN. That
+> re-investigation is done, **from the actual `libp2p-mdns 0.48` source**, and
+> the conclusion is evidence-based (not a re-assumption): **neither advisory is
+> reachable from the DHT or the WAN.** The ignores remain, with a corrected
+> rationale and drop condition.
 
-libp2p 0.56's `libp2p-mdns 0.48` hard-pins `hickory-proto 0.25.2`, for which
-two advisories exist with **no in-semver fix** (upgrading needs an upstream
-libp2p bump). They are ignored, with rationale, in `deny.toml` and
-`.cargo/audit.toml`, and must be re-audited when libp2p bumps hickory:
+### Why the DHT does not widen the hickory surface (evidence)
 
-- **RUSTSEC-2026-0118** (hickory NSEC3/DNSSEC unbounded loop) — assessed
-  **unreachable**: `libp2p-mdns` pulls `hickory-proto` with
-  `default-features = false, features = ["mdns"]`; the DNSSEC/NSEC3 resolver
-  path is not compiled or exercised by mDNS.
-- **RUSTSEC-2026-0119** (hickory O(n²) name compression on message *encoding*)
-  — a CPU-only DoS, LAN-scoped (M2b is local mDNS, no global exposure),
-  confined to the swarm task; no memory-safety or confidentiality impact.
-- **RUSTSEC-2024-0436** (`paste` unmaintained) — a compile-time-only
-  proc-macro with no runtime surface and no maintained drop-in replacement.
+`hickory-proto` enters the build through **exactly one** crate — `libp2p-mdns`
+(`cargo tree -i hickory-proto`), pulled `default-features = false,
+features = ["mdns"]`. Kademlia (`libp2p-kad`) speaks libp2p's own
+protobuf-over-Noise protocol and has **no** hickory/DNS dependency, and we do
+**not** enable libp2p's `dns` transport (no `hickory-resolver` in the tree), so
+adding the DHT introduces no new path into hickory. A post-`kad` verification
+gate (below) re-checks this once `kad` lands.
+
+Within `libp2p-mdns 0.48`, hickory is touched in exactly two places:
+
+- **Decode** — `MdnsPacket::new_from_bytes` → `Message::from_vec` (a `BinDecoder`),
+  fed solely by `recv_socket`, a UDP socket that `join_multicast`es the mDNS
+  group (224.0.0.251 / ff02::fb). This is the only hickory path reachable by
+  inbound data — but it is **not** the vulnerable one: RUSTSEC-2026-0119 is an
+  *encoding* (`BinEncoder`) bug, and RUSTSEC-2026-0118's NSEC3/DNSSEC code is
+  not compiled (no `dnssec-*` feature). A hostile inbound packet triggers
+  **neither** ignored advisory.
+- **Encode** — `build_query` / `build_query_response` /
+  `build_service_discovery_response` (`BinEncoder`, where -0119 lives). At
+  `iface.rs:279` the response is built from **our own** data only
+  (`this.local_peer_id`, `this.listen_addresses`, plus the query's 16-bit id).
+  A remote query **cannot inject records** into what we encode, so the record
+  count — the multiplier in the O(n²) name compression — is bounded by **our
+  own listen-address count**, never by attacker input.
+
+**Explicit conclusion:** a normal user running **mDNS + DHT** does **not**
+expose RUSTSEC-2026-0119 to the WAN. The DHT never reaches hickory; the mDNS
+encode path (where the bug is) processes only our own bounded records; the mDNS
+decode path (reachable by inbound packets) triggers neither ignored advisory.
+We are genuinely covered with no per-user action.
+
+Two honest caveats, and the mitigation for exposed nodes:
+
+- The mDNS UDP socket binds `0.0.0.0:5353`, so besides link-local multicast it
+  can also receive **unicast** to the host at :5353 — including from the WAN if
+  UDP/5353 is open (unfirewalled) on a public IP. That reaches only the
+  **decoder** (neither ignored advisory), but it would expose hickory's DNS
+  parser to arbitrary internet input — relevant to any *future* hickory decode
+  bug.
+- Therefore **bootstrap / public-IP / headless nodes run with `--no-mdns`**
+  (M4): the mDNS socket is not opened at all, so hickory is never invoked on
+  those (WAN-exposed) nodes. A home client behind NAT keeps mDNS for LAN
+  discovery; its :5353 is not WAN-reachable and its -0119 exposure is nil
+  regardless (the encode is self-bounded).
+
+The three ignored networking advisories, then:
+
+- **RUSTSEC-2026-0118** (hickory NSEC3/DNSSEC unbounded loop) — **not compiled**:
+  reachable only with the `dnssec-ring`/`dnssec-aws-lc-rs` feature (the
+  advisory's own condition); `libp2p-mdns` builds hickory with
+  `features = ["mdns"]` only. Unaffected from hickory ≥ 0.26.0-beta.1.
+- **RUSTSEC-2026-0119** (hickory O(n²) name compression on message *encoding*) —
+  CPU-only DoS; the encode path processes only our own records (above), so it is
+  not reachable by DHT / WAN / on-LAN attacker input. Fixed in hickory 0.26.1.
+- **RUSTSEC-2024-0436** (`paste` unmaintained) — compile-time-only proc-macro,
+  no runtime surface, no maintained drop-in replacement.
+
+**Drop condition (both hickory advisories):** when `libp2p-mdns` adopts
+`hickory-proto ≥ 0.26.1`. This is a breaking 0.25 → 0.26 bump that only an
+upstream libp2p release can make — not consumable via `[patch]` without breaking
+`libp2p-mdns`'s own compile — so it does not gate M4.
+
+**Post-`kad` verification gate (run when kad lands):** confirm `cargo tree -i
+hickory-proto` still shows the sole path is `libp2p-mdns`, and that `cargo audit`
++ `cargo deny check advisories` stay green with the ignore set unchanged.
 
 `ring` (via `snow`/`libp2p-noise`, license `Apache-2.0 AND ISC`) and all other
 resolved crates are within the `deny.toml` license allow-list.
