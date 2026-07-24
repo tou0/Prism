@@ -66,6 +66,7 @@ fn a_peer() -> PeerInfo {
         fingerprint: "3R95oF6ZdppUsD".to_owned(),
         peer_id: "12D3KooWTest".to_owned(),
         connected: true,
+        source: prism_proto::PeerSource::Mdns,
     }
 }
 

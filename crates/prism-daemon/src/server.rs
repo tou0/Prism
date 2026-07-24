@@ -217,6 +217,7 @@ async fn dispatch(state: &AppState, envelope: Envelope<Request>) -> Response {
         Request::Send { to, body } => crate::networking::handle_send(state, to, body).await,
         Request::Inbox => crate::networking::handle_inbox(state).await,
         Request::Peers => crate::networking::handle_peers(state).await,
+        Request::Resolve { handle } => crate::networking::handle_resolve(state, handle).await,
         Request::Status => crate::networking::handle_status(state).await,
         // Subscription is not a plain request→response: `run_requests`
         // intercepts a version-correct `Subscribe` and upgrades the connection

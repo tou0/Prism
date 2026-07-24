@@ -305,6 +305,14 @@ fn render_net(frame: &mut Frame, state: &AppState, area: Rect) {
             Span::raw(truncate(&state.status.peer_id, width.saturating_sub(3))),
         ]));
     }
+    // DHT posture (M4): whether we are on the DHT and how many addresses we
+    // publish — an honest, at-a-glance view of what we expose.
+    let dht = if state.status.dht_enabled {
+        format!("DHT: on · published {}", state.status.published_addrs.len())
+    } else {
+        "DHT: off".to_owned()
+    };
+    lines.push(Line::from(Span::styled(truncate(&dht, width), dim_style())));
     let remaining = (inner.height as usize).saturating_sub(lines.len());
     for addr in state.status.listen_addrs.iter().take(remaining) {
         lines.push(Line::from(truncate(addr, width)));

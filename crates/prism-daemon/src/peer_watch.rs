@@ -69,6 +69,7 @@ pub fn spawn_peer_watch(
                             fingerprint,
                             peer_id: record.peer_id,
                             connected: record.connected,
+                            source: crate::networking::map_source(record.source),
                         },
                     ))
                 })
@@ -130,6 +131,7 @@ mod tests {
             fingerprint: fingerprint.to_owned(),
             peer_id: "pid".to_owned(),
             connected,
+            source: prism_proto::PeerSource::Mdns,
         }
     }
 

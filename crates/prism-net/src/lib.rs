@@ -453,6 +453,16 @@ pub fn public_addrs(addrs: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The libp2p peer id (base58) for a peer's Ed25519 identity key, for display.
+///
+/// `None` if the key is not a valid Ed25519 point — which cannot happen for a
+/// key that has already passed locator validation, but is surfaced honestly
+/// rather than panicking. The daemon uses this to show the peer id of a peer
+/// resolved from the DHT (it has the key, but no live connection yet).
+pub fn peer_id_for(key: &PeerKey) -> Option<String> {
+    crate::identity::peer_id_from_key(key).map(|id| id.to_string())
+}
+
 /// Whether a multiaddr string carries a globally-routable IP.
 fn is_globally_routable(addr: &str) -> bool {
     let Ok(ma) = addr.parse::<Multiaddr>() else {

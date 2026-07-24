@@ -299,6 +299,9 @@ fn apply_reply(state: &mut AppState, response: Response) {
             peer_id,
             listen_addrs,
             peer_count,
+            dht_enabled,
+            published_addrs,
+            ..
         } => {
             if state.own_handle.is_empty() {
                 state.own_handle = handle;
@@ -307,6 +310,8 @@ fn apply_reply(state: &mut AppState, response: Response) {
                 peer_id,
                 listen_addrs,
                 peer_count,
+                dht_enabled,
+                published_addrs,
             };
         }
         Response::Peers { peers } => {
@@ -394,6 +399,7 @@ mod tests {
                     fingerprint: "FPALICE1234567890".to_owned(),
                     peer_id: "pid".to_owned(),
                     connected: true,
+                    source: prism_proto::PeerSource::Mdns,
                 }],
             }),
         );
@@ -557,6 +563,7 @@ mod tests {
             fingerprint: "FPDAVE".to_owned(),
             peer_id: "pid".to_owned(),
             connected: true,
+            source: prism_proto::PeerSource::Mdns,
         };
         update(&mut s, Action::Push(Event::PeerDiscovered { peer: up }));
         assert!(s.peers[0].connected);
@@ -565,6 +572,7 @@ mod tests {
             fingerprint: "FPDAVE".to_owned(),
             peer_id: "pid".to_owned(),
             connected: false,
+            source: prism_proto::PeerSource::Mdns,
         };
         update(&mut s, Action::Push(Event::PeerDiscovered { peer: down }));
         assert_eq!(s.peers.len(), 1, "an upsert must not duplicate the peer");
@@ -578,6 +586,7 @@ mod tests {
             fingerprint: "FPDAVE".to_owned(),
             peer_id: "pid".to_owned(),
             connected: true,
+            source: prism_proto::PeerSource::Mdns,
         };
         update(
             &mut s,

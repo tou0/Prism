@@ -319,13 +319,24 @@ pub async fn handle_peers(state: &AppState) -> Response {
                 fingerprint,
                 peer_id: p.peer_id,
                 connected: p.connected,
+                source: map_source(p.source),
             })
         })
         .collect();
     Response::Peers { peers }
 }
 
-/// Handle a `Status` request: our handle, peer id, listen addresses, peer count.
+/// Map a networking discovery source to its IPC mirror.
+pub(crate) fn map_source(source: prism_net::DiscoverySource) -> prism_proto::PeerSource {
+    match source {
+        prism_net::DiscoverySource::Mdns => prism_proto::PeerSource::Mdns,
+        prism_net::DiscoverySource::Dht => prism_proto::PeerSource::Dht,
+        prism_net::DiscoverySource::Manual => prism_proto::PeerSource::Manual,
+    }
+}
+
+/// Handle a `Status` request: our handle, peer id, listen addresses, peer count,
+/// and the DHT posture (enabled, routing-table liveness, published addresses).
 pub async fn handle_status(state: &AppState) -> Response {
     let handle = match state.unlocked.read().await.as_ref() {
         Some(identity) => identity.handle(),
@@ -337,11 +348,60 @@ pub async fn handle_status(state: &AppState) -> Response {
     };
     let listen_addrs = handles.net.listeners().await.unwrap_or_default();
     let peer_count = handles.net.peers().await.map(|p| p.len()).unwrap_or(0);
+    let dht = handles.net.dht_status().await.ok();
+    // What we publish: the same globally-routable set the locator is sealed over
+    // (config externals + bound listeners, IP-hygiene filtered). Shown verbatim
+    // so the user sees exactly what is exposed on the DHT.
+    let mut candidates = state.net_config.external_addrs.clone();
+    candidates.extend(listen_addrs.iter().cloned());
+    let published_addrs = if state.net_config.enable_dht {
+        prism_net::public_addrs(&candidates)
+    } else {
+        Vec::new()
+    };
     Response::Status {
         handle,
         peer_id: handles.net.local_peer_id().to_owned(),
         listen_addrs,
         peer_count,
+        dht_enabled: state.net_config.enable_dht,
+        dht_routing_peers: dht.map(|d| d.routing_peers).unwrap_or(0),
+        published_addrs,
+    }
+}
+
+/// Handle a `Resolve` request (M4): resolve a handle to its signed DHT locator,
+/// validate it, and report the peer id and published addresses. Returns
+/// `NotReachable` when no valid record is found.
+pub async fn handle_resolve(state: &AppState, handle: String) -> Response {
+    let guard = state.net.read().await;
+    let Some(handles) = guard.as_ref() else {
+        return locked();
+    };
+    // Accept `nick#fp` or a bare `#fp` / `fp`; the fingerprint is what we key on.
+    let short_fp = handle.rsplit('#').next().unwrap_or(&handle);
+    let key = prism_core::dht_locator_key(short_fp);
+    let bytes = match handles.net.resolve_locator(key).await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Response::NotReachable { handle },
+        Err(e) => {
+            return Response::Error {
+                message: e.to_string(),
+            }
+        }
+    };
+    let Ok(locator) = prism_core::open_locator(&bytes, &key) else {
+        // A record exists but fails validation — treat as not found (hostile or
+        // corrupt); never surface unvalidated network data as a real peer.
+        return Response::NotReachable { handle };
+    };
+    let peer_key = prism_net::PeerKey::from_bytes(*locator.identity().as_bytes());
+    let peer_id = prism_net::peer_id_for(&peer_key).unwrap_or_default();
+    let fingerprint = full_fingerprint(&peer_key).unwrap_or_else(|| short_fp.to_owned());
+    Response::Resolved {
+        fingerprint,
+        peer_id,
+        addrs: locator.addrs().to_vec(),
     }
 }
 

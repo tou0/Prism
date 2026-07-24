@@ -186,7 +186,12 @@ pub async fn peers(socket_path: &Path) -> Result<()> {
                     } else {
                         "discovered"
                     };
-                    println!("  #{}  [{}]", peer.fingerprint, state);
+                    println!(
+                        "  #{}  [{}, via {}]",
+                        peer.fingerprint,
+                        state,
+                        text::peer_source_label(peer.source)
+                    );
                     println!("    peer id: {}", peer.peer_id);
                 }
             }
@@ -204,6 +209,9 @@ pub async fn status(socket_path: &Path) -> Result<()> {
             peer_id,
             listen_addrs,
             peer_count,
+            dht_enabled,
+            dht_routing_peers,
+            published_addrs,
         } => {
             println!("  handle:    {handle}");
             println!("  peer id:   {peer_id}");
@@ -216,6 +224,53 @@ pub async fn status(socket_path: &Path) -> Result<()> {
                     println!("    {addr}");
                 }
             }
+            if dht_enabled {
+                println!("  DHT:       enabled ({dht_routing_peers} peers in routing table)");
+                // Honest IP posture: show exactly what other nodes learn about us.
+                if published_addrs.is_empty() {
+                    println!("  published: (identity only — no reachable address advertised)");
+                } else {
+                    println!("  published:");
+                    for addr in published_addrs {
+                        println!("    {addr}");
+                    }
+                }
+            } else {
+                println!("  DHT:       disabled");
+            }
+            Ok(())
+        }
+        other => fail(other),
+    }
+}
+
+/// `prism resolve <handle>` — resolve a handle through the DHT and print the
+/// signed locator's published addresses (off-LAN discovery, M4).
+pub async fn resolve(socket_path: &Path, handle: String) -> Result<()> {
+    let request = Request::Resolve {
+        handle: handle.clone(),
+    };
+    match roundtrip(socket_path, request).await? {
+        Response::Resolved {
+            fingerprint,
+            peer_id,
+            addrs,
+        } => {
+            println!("  fingerprint: {fingerprint}");
+            println!("  peer id:     {peer_id}");
+            if addrs.is_empty() {
+                println!("{}", text::RESOLVE_NO_ADDRS);
+            } else {
+                println!("  addresses:");
+                for addr in addrs {
+                    println!("    {addr}");
+                }
+            }
+            Ok(())
+        }
+        Response::NotReachable { handle } => {
+            // Not an error exit: simply nothing valid published under that handle.
+            println!("{}", text::resolve_not_found(&handle));
             Ok(())
         }
         other => fail(other),

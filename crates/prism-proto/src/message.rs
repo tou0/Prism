@@ -16,7 +16,12 @@ use crate::sensitive::Sensitive;
 /// [`Response::Subscribed`], [`Response::Event`]) is a real addition to the
 /// client↔daemon protocol. The daemon rejects mismatched versions; a richer
 /// compatibility window is deferred with the rest of version negotiation.
-pub const PROTOCOL_VERSION: u16 = 2;
+///
+/// Bumped to `3` for M4 (DHT discovery): [`Request::Resolve`] /
+/// [`Response::Resolved`], the DHT fields on [`Response::Status`], and the
+/// discovery [`PeerSource`] on [`PeerInfo`]. Client and daemon ship from the
+/// same build, so the strict version match is not a compatibility concern here.
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// The user's choice of recovery mode at identity creation (spec §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +87,14 @@ pub enum Request {
     Inbox,
     /// List peers discovered on the local network. Expects [`Response::Peers`].
     Peers,
+    /// Resolve a handle through the DHT (M4): look up the signed locator by
+    /// fingerprint, validate it, and report the addresses published for it.
+    /// Expects [`Response::Resolved`] or [`Response::NotReachable`].
+    Resolve {
+        /// The handle to resolve, `nick#fingerprint` (the fingerprint part is
+        /// what the DHT is keyed on; the nick is ignored).
+        handle: String,
+    },
     /// Network and identity status. Expects [`Response::Status`].
     Status,
     /// Subscribe this connection to server-initiated push events (M3).
@@ -139,6 +152,19 @@ pub enum Response {
         /// One entry per discovered peer.
         peers: Vec<PeerInfo>,
     },
+    /// A handle was resolved through the DHT (M4): its signed locator was found
+    /// and validated.
+    Resolved {
+        /// The resolved peer's full fingerprint (base58), taken from the record.
+        fingerprint: String,
+        /// The peer's libp2p peer id (base58).
+        peer_id: String,
+        /// The globally-routable addresses the peer published. **May be empty**:
+        /// the identity is discoverable but not directly connectable — a
+        /// NAT-bound peer, reachable once relays land (M5). Discovery is not
+        /// reachability.
+        addrs: Vec<String>,
+    },
     /// Network and identity status.
     Status {
         /// Our handle, `nick#fingerprint`.
@@ -149,6 +175,15 @@ pub enum Response {
         listen_addrs: Vec<String>,
         /// Number of currently discovered peers.
         peer_count: usize,
+        /// Whether the Kademlia DHT is enabled on this node (M4).
+        dht_enabled: bool,
+        /// Distinct peers seen in the DHT routing table (approximate liveness).
+        dht_routing_peers: usize,
+        /// The globally-routable addresses we publish in our DHT locator — what
+        /// other nodes learn about us. Empty means we publish an identity-only
+        /// locator (no reachable address advertised). Shown so the user can see
+        /// exactly what is exposed (honest IP posture, spec §13).
+        published_addrs: Vec<String>,
     },
     /// The request could not be served; carries a human-readable reason.
     Error {
@@ -201,6 +236,18 @@ pub struct InboxItem {
     pub body: Sensitive,
 }
 
+/// How a peer was discovered (M4). Mirror of prism-net's `DiscoverySource`,
+/// kept in the proto crate so the IPC layer carries no networking dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PeerSource {
+    /// Local-network mDNS multicast.
+    Mdns,
+    /// The Kademlia DHT (a resolved signed locator).
+    Dht,
+    /// Seeded out of band (a bootstrap node or an explicit address hint).
+    Manual,
+}
+
 /// One discovered peer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
@@ -210,6 +257,8 @@ pub struct PeerInfo {
     pub peer_id: String,
     /// Whether a connection is currently open.
     pub connected: bool,
+    /// How this peer was discovered (mDNS, DHT, or seeded manually).
+    pub source: PeerSource,
 }
 
 /// Transport envelope wrapping every IPC message with a protocol version.
@@ -276,6 +325,7 @@ mod tests {
                 fingerprint: "abc".to_owned(),
                 peer_id: "12D3Koo".to_owned(),
                 connected: true,
+                source: PeerSource::Mdns,
             },
         });
         let json = serde_json::to_string(&discovered).expect("serialize");
@@ -297,9 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn envelope_carries_protocol_version_two() {
-        assert_eq!(PROTOCOL_VERSION, 2);
+    fn envelope_carries_protocol_version() {
+        assert_eq!(PROTOCOL_VERSION, 3);
         let env = Envelope::new(Request::Subscribe);
-        assert_eq!(env.version, 2);
+        assert_eq!(env.version, 3);
     }
 }

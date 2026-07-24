@@ -44,14 +44,34 @@ pub fn not_reachable(handle: &str) -> String {
     format!("{handle} is not reachable on the local network; nothing was queued")
 }
 
+// ── DHT resolve / status (M4) ────────────────────────────────────────────────
+
+/// No valid signed locator was found on the DHT for this handle.
+pub fn resolve_not_found(handle: &str) -> String {
+    format!("{handle} was not found on the DHT (no valid locator published)")
+}
+
+/// A locator was found but advertises no reachable address (NAT-bound peer).
+pub const RESOLVE_NO_ADDRS: &str =
+    "  (no reachable address published — discovered, but not directly connectable until relays, M5)";
+
+/// Short label for how a peer was discovered.
+pub fn peer_source_label(source: prism_proto::PeerSource) -> &'static str {
+    match source {
+        prism_proto::PeerSource::Mdns => "mDNS",
+        prism_proto::PeerSource::Dht => "DHT",
+        prism_proto::PeerSource::Manual => "manual",
+    }
+}
+
 // ── TUI (M3) ────────────────────────────────────────────────────────────────
 
 pub const TUI_TITLE: &str = "Prism";
 pub const TUI_CONVERSATIONS: &str = "CONVERSATIONS";
-pub const TUI_PEERS: &str = "PEERS (mDNS)";
+pub const TUI_PEERS: &str = "PEERS";
 pub const TUI_NET: &str = "NET";
 pub const TUI_NO_CONVERSATIONS: &str = "no conversations yet — open a peer";
-pub const TUI_NO_PEERS: &str = "no peers on the LAN yet";
+pub const TUI_NO_PEERS: &str = "no peers discovered yet";
 pub const TUI_NO_MESSAGES: &str = "no messages yet — press i to write one";
 pub const TUI_NO_CONVERSATION_SELECTED: &str = "select a conversation (↑↓, Enter) or a peer";
 pub const TUI_INPUT_HINT: &str = "type a message…";

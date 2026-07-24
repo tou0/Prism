@@ -148,6 +148,11 @@ pub struct StatusInfo {
     pub listen_addrs: Vec<String>,
     /// Number of currently discovered peers.
     pub peer_count: usize,
+    /// Whether the Kademlia DHT is enabled on this node (M4).
+    pub dht_enabled: bool,
+    /// The globally-routable addresses we publish on the DHT — what other nodes
+    /// learn about us (shown so the user sees exactly what is exposed).
+    pub published_addrs: Vec<String>,
 }
 
 /// The whole interactive state.

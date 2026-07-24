@@ -61,6 +61,12 @@ enum Command {
     Inbox,
     /// List peers discovered on the local network.
     Peers,
+    /// Resolve a handle through the DHT: find and validate its signed locator,
+    /// then print the addresses it publishes (off-LAN discovery, M4).
+    Resolve {
+        /// The handle to resolve, `nick#fingerprint`.
+        handle: String,
+    },
     /// Show network and identity status.
     Status,
     /// Launch the interactive TUI (the default when no subcommand is given).
@@ -97,6 +103,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Send { to, message } => commands::send(&socket_path, to, message).await,
         Command::Inbox => commands::inbox(&socket_path).await,
         Command::Peers => commands::peers(&socket_path).await,
+        Command::Resolve { handle } => commands::resolve(&socket_path, handle).await,
         Command::Status => commands::status(&socket_path).await,
         Command::Chat => tui::run(&socket_path).await,
     }
