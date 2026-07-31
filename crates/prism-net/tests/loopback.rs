@@ -54,6 +54,30 @@ impl InboundSink for ValidatingSink {
     }
 }
 
+/// A validating sink that also records what it was asked to validate, so a test
+/// can prove the swarm consults the validator *before* storing an inbound
+/// record (the anti-poisoning front door) rather than storing it silently.
+struct AuditingSink {
+    /// Every (key, value) offered for validation, and the verdict returned.
+    seen: Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl InboundSink for AuditingSink {
+    fn deliver(&self, _from: PeerKey, _sealed: Vec<u8>, reply: oneshot::Sender<InboundOutcome>) {
+        let _ = reply.send(InboundOutcome::Accepted);
+    }
+    fn validate_locator(&self, key: &[u8], value: &[u8]) -> bool {
+        let verdict = match <&[u8; 32]>::try_from(key) {
+            Ok(k) => prism_core::open_locator(value, k).is_ok(),
+            Err(_) => false,
+        };
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(verdict);
+        }
+        verdict
+    }
+}
+
 fn seed(fill: u8) -> Seed32 {
     Seed32::from_bytes([fill; 32])
 }
@@ -267,4 +291,79 @@ async fn peers_discover_each_other_through_the_dht_only() {
         "the resolved locator carries Alice's authenticated identity"
     );
     assert_eq!(loc.addrs(), &[alice_addr]);
+}
+
+/// The anti-poisoning front door: an inbound DHT record is offered to the
+/// validator *before* it can be stored, and a tampered one is vetoed.
+///
+/// This tests the **wiring** (the validator is installed and consulted on the
+/// `PutRecord` path under `StoreInserts::FilterBoth`); that the validator itself
+/// rejects unsigned / wrongly-signed / oversized / malformed records is covered
+/// exhaustively by `prism-core`'s locator tests.
+///
+/// Honest scope: nothing stops an attacker from serving *its own* hostile record
+/// from its own store — which is exactly why the daemon validates again on
+/// resolve (`handle_resolve` → `open_locator`, surfacing `NotReachable` on
+/// failure). Storage-side vetoing keeps honest nodes from *amplifying* a bad
+/// record; it is not a claim that a record can never be offered to us.
+#[tokio::test]
+async fn a_tampered_inbound_record_is_vetoed_before_storage() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    // An honest DHT server that audits every record offered to it.
+    let (boot, _jboot) = spawn(
+        &seed(0xE1),
+        Arc::new(AuditingSink {
+            seen: Arc::clone(&seen),
+        }),
+        "/ip4/127.0.0.1/tcp/0",
+        dht_only(Vec::new()),
+    )
+    .unwrap();
+    let boot_addr = first_listener(&boot).await;
+    boot.add_external_address(boot_addr.clone()).await.unwrap();
+    let boot_entry = format!("{boot_addr}/p2p/{}", boot.local_peer_id());
+
+    // An attacker that knows the honest server and publishes a tampered record.
+    let (attacker, _ja) = spawn(
+        &seed(0xE2),
+        Arc::new(NullSink),
+        "/ip4/127.0.0.1/tcp/0",
+        dht_only(vec![boot_entry]),
+    )
+    .unwrap();
+
+    let att_identity = IdentityKeypair::from_seed(&seed(0xE2));
+    let att_addr = first_listener(&attacker).await;
+    let good = prism_core::seal_locator(&att_identity, std::slice::from_ref(&att_addr), 1).unwrap();
+    let key = prism_core::own_locator_key(&att_identity.public());
+    // Flip a payload byte: the signature no longer covers these bytes.
+    let mut tampered = good.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    assert!(
+        prism_core::open_locator(&tampered, &key).is_err(),
+        "precondition: the tampered record must be invalid"
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Publish it repeatedly until the honest node has been offered it.
+    for _ in 0..60 {
+        let _ = attacker.publish_locator(key, tampered.clone()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if seen.lock().map(|s| !s.is_empty()).unwrap_or(false) {
+            break;
+        }
+    }
+
+    let verdicts = seen.lock().expect("lock").clone();
+    assert!(
+        !verdicts.is_empty(),
+        "the honest node must consult the validator on an inbound record"
+    );
+    assert!(
+        verdicts.iter().all(|ok| !ok),
+        "every tampered record must be vetoed (no silent storage)"
+    );
 }

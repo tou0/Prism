@@ -425,6 +425,58 @@ mod tests {
         ));
     }
 
+    /// Impersonation: a record that *claims* the victim's identity but was
+    /// signed by someone else. The DHT-key binding cannot catch this (the
+    /// embedded key really is the victim's, so it hashes to the key the record
+    /// lives under) — only the signature check can, and it must.
+    #[test]
+    fn a_record_claiming_another_identity_is_rejected() {
+        let attacker = identity(0x21);
+        let victim = identity(0x99);
+        let mut wire = seal_locator(&attacker, &addrs(&["/ip4/9.9.9.9/tcp/1"]), 1).expect("seal");
+        // Splice in the victim's identity key, leaving the attacker's signature.
+        wire[IK_ED_OFFSET..IK_ED_OFFSET + 32].copy_from_slice(victim.public().as_bytes());
+        assert!(matches!(
+            open_locator(&wire, &key_for(&victim)),
+            Err(LocatorError::BadSignature)
+        ));
+    }
+
+    /// An unsigned record (signature bytes absent/zeroed) is refused: a valid
+    /// identity and well-formed body are never sufficient on their own.
+    #[test]
+    fn an_unsigned_record_is_rejected() {
+        let signer = identity(0x21);
+        let mut wire = seal_locator(&signer, &addrs(&["/ip4/9.9.9.9/tcp/1"]), 1).expect("seal");
+        let sig_start = wire.len() - SIGNATURE_LEN;
+        wire[sig_start..].fill(0);
+        assert!(matches!(
+            open_locator(&wire, &key_for(&signer)),
+            Err(LocatorError::BadSignature)
+        ));
+    }
+
+    /// Oversized on *ingestion*, not just on seal: a hostile record declaring an
+    /// address longer than the cap is a clean typed error, refused before the
+    /// address is copied out (the seal-side caps only bind our own publishing).
+    #[test]
+    fn an_oversized_address_on_open_is_a_clean_error() {
+        let signer = identity(0x21);
+        let mut wire = Vec::new();
+        wire.push(LOCATOR_VERSION);
+        wire.extend_from_slice(signer.public().as_bytes());
+        wire.extend_from_slice(&1u64.to_be_bytes()); // published_at
+        wire.extend_from_slice(&1u16.to_be_bytes()); // addr_count = 1
+        let over = MAX_ADDR_LEN + 1;
+        wire.extend_from_slice(&(over as u16).to_be_bytes());
+        wire.extend_from_slice(&vec![b'a'; over]);
+        wire.extend_from_slice(&[0u8; SIGNATURE_LEN]);
+        assert!(matches!(
+            open_locator(&wire, &key_for(&signer)),
+            Err(LocatorError::AddressTooLong)
+        ));
+    }
+
     #[test]
     fn truncations_and_trailing_bytes_are_clean_errors() {
         let signer = identity(0x21);
