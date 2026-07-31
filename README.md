@@ -106,8 +106,14 @@ cargo run --bin prism  -- resolve <nick#fingerprint>
 `resolve` finds and validates the peer's signed locator and prints the addresses
 it publishes (or says plainly when it advertises none — discoverable but not yet
 directly connectable, since NAT traversal is M5). Bootstrap addresses are **IP
-multiaddrs only** (no `/dns/`). See [`docs/net.md`](docs/net.md) for the locator
-format, IP-hygiene rules, and the honest IP posture.
+multiaddrs only** (no `/dns/`).
+
+Two things a bootstrap node needs: its **public address advertised**
+(`--external-address`, else it never stores others' records) and an **unlocked
+keystore** (the identity is held in RAM only after `prism unlock`, so a locked
+node publishes nothing and joins no DHT). See [`docs/net.md`](docs/net.md) for
+the locator format, IP-hygiene rules, running a bootstrap node, and the honest
+IP posture.
 
 Or just run `prism chat` (or bare `prism`) for the interactive TUI: pick a peer
 from the discovered list, open a conversation, and type — incoming messages

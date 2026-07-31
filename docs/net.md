@@ -169,6 +169,20 @@ public-IP node run with `--no-mdns`); it is **not** a relay (that is M5).
 records); a node with only private/loopback addresses stays a **client** (it
 publishes and queries but is not asked to store others' records).
 
+**Running a bootstrap node (operational).** Two requirements, both easy to miss:
+
+1. **It must advertise its public address** (`--external-address
+   /ip4/<PUBLIC_IP>/tcp/<port>`), or it stays a Kademlia *client* and will not
+   store other nodes' locators — resolution against it then returns nothing even
+   though the network path is fine.
+2. **Its keystore must be unlocked.** The daemon holds the identity in RAM only
+   after `unlock`, and brings networking up at that point, so a **locked node
+   publishes no locator and joins no DHT**. This is a consequence of the
+   secrets model, not a bug — but it means an always-on headless bootstrap
+   currently needs a human to unlock it at startup. An unlock-at-startup story
+   (and the honest trade-off that any auto-unlock weakens at-rest protection,
+   since the passphrase must then be reachable by the machine) is **M5**.
+
 **IP hygiene (honest posture, spec §13).** `public_addrs` (prism-net owns
 multiaddr parsing) drops loopback, private (RFC 1918), link-local, and CGNAT
 addresses, so **only globally-routable addresses are ever published**. A node
