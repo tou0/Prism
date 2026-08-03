@@ -49,4 +49,5 @@ zeroize.workspace = true
 
 [dev-dependencies]
 libp2p-swarm-test = "0.6"
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

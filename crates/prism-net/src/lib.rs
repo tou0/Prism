@@ -657,6 +657,17 @@ pub fn spawn(
         }
     }
 
+    // A relay must be able to tell clients where to reach it: the reservation it
+    // grants carries those addresses, and a relay with none makes every client
+    // reject its reservation. Warn loudly rather than fail — AutoNAT may confirm
+    // an address shortly, at which point reservations start working.
+    if config.relay_server.is_some() && config.external_addrs.is_empty() {
+        warn!(
+            "running as a relay with no advertised external address; reservations \
+             will be refused by clients until one is known (set --external-address)"
+        );
+    }
+
     // The swarm task adds these to Kademlia and bootstraps on startup.
     let bootstrap: Vec<(PeerId, Multiaddr)> = config
         .bootstrap
