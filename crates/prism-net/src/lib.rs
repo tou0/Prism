@@ -31,7 +31,7 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
-    autonat, identify, kad, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId,
+    autonat, identify, kad, mdns, noise, relay, request_response, tcp, yamux, Multiaddr, PeerId,
     StreamProtocol, SwarmBuilder,
 };
 use prism_core::Seed32;
@@ -178,6 +178,50 @@ pub struct NetConfig {
     /// in the following commits — DCUtR hole punching and relay clients. On by
     /// default; disabling it leaves a node with direct connectivity only.
     pub enable_nat_traversal: bool,
+    /// Act as a **relay** for NAT-bound peers (M5). `None` (the default) means
+    /// this node relays nothing; `Some(limits)` opts in with operator-set caps.
+    ///
+    /// Opt-in is deliberate and required by spec §6: relaying must be voluntary
+    /// and capped, so a node is never drained against its owner's will.
+    pub relay_server: Option<RelayLimits>,
+}
+
+/// Operator-set caps for acting as a relay (M5).
+///
+/// Spec §6 requires relaying to be "voluntary, capped, capability-aware": these
+/// bound what a relay will carry so a VPS cannot be swamped, accidentally or
+/// deliberately. libp2p additionally applies per-peer and per-IP rate limiters
+/// (its defaults) on top of these totals.
+#[derive(Debug, Clone)]
+pub struct RelayLimits {
+    /// Maximum simultaneous reservations (distinct peers using us as a relay).
+    pub max_reservations: usize,
+    /// Maximum reservations a single peer may hold.
+    pub max_reservations_per_peer: usize,
+    /// Maximum simultaneous open circuits.
+    pub max_circuits: usize,
+    /// Maximum simultaneous circuits for a single peer.
+    pub max_circuits_per_peer: usize,
+    /// Maximum lifetime of one circuit, in seconds.
+    pub max_circuit_duration_secs: u64,
+    /// Maximum bytes one circuit may carry before it is closed.
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for RelayLimits {
+    /// Conservative defaults sized for a small VPS: enough to be genuinely
+    /// useful, low enough that an abusive peer cannot monopolise the node.
+    /// Messaging circuits are short and small, so the byte cap is modest.
+    fn default() -> Self {
+        Self {
+            max_reservations: 128,
+            max_reservations_per_peer: 4,
+            max_circuits: 64,
+            max_circuits_per_peer: 4,
+            max_circuit_duration_secs: 120,
+            max_circuit_bytes: 4 * 1024 * 1024,
+        }
+    }
 }
 
 impl Default for NetConfig {
@@ -188,6 +232,7 @@ impl Default for NetConfig {
             bootstrap: Vec::new(),
             external_addrs: Vec::new(),
             enable_nat_traversal: true,
+            relay_server: None,
         }
     }
 }
@@ -419,6 +464,31 @@ fn build_behaviour(
         Toggle::from(None)
     };
 
+    // Relay server (M5): opt-in, capped. A relay forwards **opaque encrypted
+    // bytes** — it terminates no session, parses no payload, and cannot read
+    // messages (they are Olm-encrypted end to end, inside a Noise/TLS hop).
+    //
+    // Non-retention is a property of what we *do not* build: there is no circuit
+    // ledger here and nothing is written to disk. See docs/net.md for the honest
+    // limit — a relay does observe pairs in real time; it just keeps no record.
+    let relay_server = match &config.relay_server {
+        Some(limits) => {
+            let mut cfg = relay::Config {
+                max_reservations: limits.max_reservations,
+                max_reservations_per_peer: limits.max_reservations_per_peer,
+                max_circuits: limits.max_circuits,
+                max_circuits_per_peer: limits.max_circuits_per_peer,
+                max_circuit_bytes: limits.max_circuit_bytes,
+                ..Default::default()
+            };
+            cfg.max_circuit_duration = Duration::from_secs(limits.max_circuit_duration_secs);
+            // `Config::default()` keeps libp2p's per-peer and per-IP rate
+            // limiters, which apply on top of the totals above.
+            Toggle::from(Some(relay::Behaviour::new(local_peer_id, cfg)))
+        }
+        None => Toggle::from(None),
+    };
+
     let codec = request_response::cbor::codec::Codec::<WireRequest, WireResponse>::default()
         .set_request_size_maximum(MAX_REQUEST_BYTES)
         .set_response_size_maximum(MAX_RESPONSE_BYTES);
@@ -434,6 +504,7 @@ fn build_behaviour(
         identify,
         autonat,
         autonat_server,
+        relay_server,
     })
 }
 

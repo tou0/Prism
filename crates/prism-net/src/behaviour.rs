@@ -12,7 +12,7 @@
 use libp2p::kad::store::MemoryStore;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{autonat, identify, kad, mdns, request_response};
+use libp2p::{autonat, identify, kad, mdns, relay, request_response};
 
 use crate::protocol::{WireRequest, WireResponse};
 
@@ -42,4 +42,9 @@ pub(crate) struct PrismBehaviour {
     /// Enabled only on a node the operator declares publicly reachable — a
     /// NAT-bound node cannot usefully dial anyone back.
     pub autonat_server: Toggle<autonat::v2::server::Behaviour>,
+    /// Circuit Relay v2 *server* (M5): forwards opaque encrypted bytes for
+    /// NAT-bound peers. **Opt-in and capped** (spec §6) — disabled unless the
+    /// operator asks for it, so a node is never drained against its owner's
+    /// will. It terminates no session and can read nothing.
+    pub relay_server: Toggle<relay::Behaviour>,
 }

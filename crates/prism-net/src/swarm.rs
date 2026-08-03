@@ -17,7 +17,7 @@ use libp2p::request_response::{
     Event as RrEvent, Message as RrMessage, OutboundRequestId, ResponseChannel,
 };
 use libp2p::swarm::SwarmEvent;
-use libp2p::{mdns, Multiaddr, PeerId, Swarm};
+use libp2p::{mdns, relay, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
@@ -148,6 +148,13 @@ pub(crate) struct SwarmTask {
     /// Distinct peers seen entering the routing table (approximate liveness for
     /// `status`; never decremented — a coarse "have we joined?" signal).
     dht_peers: HashSet<PeerId>,
+    /// Relay-server load counters (M5). **Aggregate only, by design**: this is
+    /// the whole of what a Prism relay remembers about the traffic it carries —
+    /// counts, never pairs, never per-peer entries, never persisted. See the
+    /// non-retention note in the relay event handler.
+    relay_reservations: usize,
+    relay_circuits: usize,
+    relay_circuits_total: u64,
     /// Last AutoNAT verdict per probed address (M5): `true` = dialled back
     /// successfully. Keyed by address because reachability is per-address — one
     /// confirmed address is enough to be Public, while Private requires that
@@ -178,6 +185,9 @@ impl SwarmTask {
             pending_get: HashMap::new(),
             pending_put: HashMap::new(),
             dht_peers: HashSet::new(),
+            relay_reservations: 0,
+            relay_circuits: 0,
+            relay_circuits_total: 0,
             autonat_results: HashMap::new(),
         }
     }
@@ -480,6 +490,31 @@ impl SwarmTask {
             // peer's word alone, so nothing is recorded here.
             SwarmEvent::Behaviour(PrismBehaviourEvent::Identify(_)) => {}
             SwarmEvent::Behaviour(PrismBehaviourEvent::AutonatServer(_)) => {}
+            // Relay server (M5). **Non-retention lives here, as an absence**:
+            // these events carry the peer ids on both ends of a circuit, and we
+            // deliberately keep only *aggregate counters* — never a pair, never a
+            // per-peer entry, never anything written to disk. The counters exist
+            // so an operator can see load; they identify nobody.
+            //
+            // Nothing is logged at info level either: a log line naming both ends
+            // would be exactly the routing record we promise not to keep.
+            SwarmEvent::Behaviour(PrismBehaviourEvent::RelayServer(event)) => match event {
+                relay::Event::ReservationReqAccepted { .. } => {
+                    self.relay_reservations = self.relay_reservations.saturating_add(1);
+                }
+                relay::Event::ReservationClosed { .. }
+                | relay::Event::ReservationTimedOut { .. } => {
+                    self.relay_reservations = self.relay_reservations.saturating_sub(1);
+                }
+                relay::Event::CircuitReqAccepted { .. } => {
+                    self.relay_circuits = self.relay_circuits.saturating_add(1);
+                    self.relay_circuits_total = self.relay_circuits_total.saturating_add(1);
+                }
+                relay::Event::CircuitClosed { .. } => {
+                    self.relay_circuits = self.relay_circuits.saturating_sub(1);
+                }
+                _ => {}
+            },
             SwarmEvent::Behaviour(PrismBehaviourEvent::Rr(RrEvent::Message {
                 peer,
                 message,
