@@ -381,6 +381,35 @@ async fn handle_restore(
 /// `Unlock`: decrypt the keystore and load the identity into RAM. Always
 /// runs the full KDF + AEAD verification, even if already unlocked — a
 /// wrong passphrase never succeeds by riding an existing unlock.
+/// Unlock with a passphrase obtained outside the IPC path (unattended startup,
+/// M5). Shares the whole unlock flow with the interactive handler — same Argon2
+/// on the blocking pool, same networking bring-up — so an unattended node is
+/// never on a different, less-tested code path.
+pub async fn unlock_with_passphrase(state: &AppState, passphrase: prism_core::Passphrase) -> bool {
+    let mut unlocked = state.unlocked.write().await;
+    let path = state.keystore_path.clone();
+    let opened = tokio::task::spawn_blocking(move || {
+        prism_core::keystore::open_from_path(&path, &passphrase)
+    })
+    .await;
+
+    let ok = match opened {
+        Ok(Ok(contents)) => {
+            let keypair = IdentityKeypair::from_seed(contents.seed());
+            *unlocked = Some(UnlockedIdentity::new(keypair, contents.nick().to_owned()));
+            true
+        }
+        // Never log the reason at a level that could hint at the passphrase; the
+        // operator sees a plain failure and checks their file.
+        _ => false,
+    };
+    drop(unlocked);
+    if ok {
+        bring_up_networking(state).await;
+    }
+    ok
+}
+
 async fn handle_unlock(state: &AppState, passphrase: Sensitive) -> Response {
     let mut unlocked = state.unlocked.write().await;
     let path = state.keystore_path.clone();

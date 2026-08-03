@@ -17,6 +17,7 @@ pub mod server;
 pub mod session_core;
 pub mod socket;
 pub mod state;
+pub mod unattended;
 
 use std::path::PathBuf;
 

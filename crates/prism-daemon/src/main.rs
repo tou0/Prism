@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 use prism_daemon::{bind_secure, serve, AppState, SocketGuard};
 
@@ -44,6 +44,33 @@ struct Args {
     /// Disable the Kademlia DHT (LAN-only node, mDNS only).
     #[arg(long = "no-dht")]
     no_dht: bool,
+    /// Act as a relay for NAT-bound peers (Circuit Relay v2). Opt-in, capped —
+    /// see --relay-max-circuits / --relay-max-reservations.
+    #[arg(long = "relay")]
+    relay: bool,
+    /// A relay this node may route through, `…/p2p/<peer-id>` (repeatable).
+    /// Used automatically when a peer cannot be reached directly.
+    #[arg(long = "relay-addr")]
+    relay_addr: Vec<String>,
+    /// Maximum simultaneous relayed circuits when running as a relay.
+    #[arg(long = "relay-max-circuits")]
+    relay_max_circuits: Option<usize>,
+    /// Maximum simultaneous relay reservations when running as a relay.
+    #[arg(long = "relay-max-reservations")]
+    relay_max_reservations: Option<usize>,
+    /// Unlock the keystore at startup from --passphrase-file, with no human
+    /// present (for an always-on bootstrap/relay node).
+    ///
+    /// SECURITY TRADE-OFF: the passphrase then lives on this machine, so anyone
+    /// who can read that file — root, a backup, a snapshot, a stolen disk — owns
+    /// this identity. Use only on a dedicated node holding no personal
+    /// conversations. Never the default; interactive `prism unlock` is unaffected.
+    #[arg(long = "unattended")]
+    unattended: bool,
+    /// File holding the keystore passphrase for --unattended. Must be mode 0600
+    /// and owned by the user running the daemon, or the daemon refuses to use it.
+    #[arg(long = "passphrase-file")]
+    passphrase_file: Option<PathBuf>,
     /// Disable NAT traversal (AutoNAT reachability detection, hole punching, and
     /// relay use). Leaves the node with direct connectivity only — it will not
     /// reach peers behind NAT, nor be reachable if it is itself behind one.
@@ -95,9 +122,31 @@ async fn run(args: Args) -> Result<()> {
         bootstrap: args.bootstrap,
         external_addrs: args.external_address,
         enable_nat_traversal: !args.no_nat_traversal,
-        relays: Vec::new(),
-        relay_server: None,
+        relays: args.relay_addr,
+        relay_server: if args.relay {
+            let mut limits = prism_net::RelayLimits::default();
+            if let Some(n) = args.relay_max_circuits {
+                limits.max_circuits = n;
+            }
+            if let Some(n) = args.relay_max_reservations {
+                limits.max_reservations = n;
+            }
+            Some(limits)
+        } else {
+            None
+        },
     };
+
+    // Unattended unlock (M5): read and validate the passphrase file *before*
+    // binding the socket, so a misconfigured node fails fast and loudly rather
+    // than coming up silently locked.
+    let unattended = prism_daemon::unattended::UnattendedConfig {
+        enabled: args.unattended,
+        passphrase_file: args.passphrase_file,
+    };
+    let unattended_passphrase = unattended
+        .load_passphrase()
+        .context("unattended unlock configuration")?;
 
     let listener = bind_secure(&socket_path)
         .with_context(|| format!("binding IPC socket at {}", socket_path.display()))?;
@@ -110,6 +159,17 @@ async fn run(args: Args) -> Result<()> {
         net_config,
     ));
     info!(socket = %socket_path.display(), "prismd is listening");
+
+    // Auto-unlock before serving, so an always-on node publishes its locator and
+    // can relay immediately after a restart. The passphrase is consumed here and
+    // never held beyond it; it is never logged.
+    if let Some(passphrase) = unattended_passphrase {
+        if prism_daemon::server::unlock_with_passphrase(&state, passphrase).await {
+            info!("unattended unlock succeeded (keystore passphrase read from file)");
+        } else {
+            warn!("unattended unlock failed: check the passphrase file contents");
+        }
+    }
 
     tokio::select! {
         result = serve(listener, state) => result.context("IPC server stopped unexpectedly")?,
