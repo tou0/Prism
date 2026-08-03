@@ -19,6 +19,7 @@
 //! wiring and the persist-before-transmit ordering.
 
 mod behaviour;
+mod dcutr_tcp;
 mod identity;
 mod protocol;
 mod swarm;
@@ -31,8 +32,8 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
-    autonat, dcutr, identify, kad, mdns, noise, relay, request_response, tcp, yamux, Multiaddr,
-    PeerId, StreamProtocol, SwarmBuilder,
+    autonat, identify, kad, mdns, noise, relay, request_response, tcp, yamux, Multiaddr, PeerId,
+    StreamProtocol, SwarmBuilder,
 };
 use prism_core::Seed32;
 use tokio::sync::{mpsc, oneshot};
@@ -522,7 +523,7 @@ fn build_behaviour(
     let (relay_client, dcutr) = if config.enable_nat_traversal {
         (
             Toggle::from(Some(relay_client)),
-            Toggle::from(Some(dcutr::Behaviour::new(local_peer_id))),
+            Toggle::from(Some(crate::dcutr_tcp::TcpOnlyDcutr::new(local_peer_id))),
         )
     } else {
         (Toggle::from(None), Toggle::from(None))

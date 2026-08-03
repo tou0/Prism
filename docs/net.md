@@ -221,13 +221,42 @@ M4 made two nodes *discoverable* across the internet; it did not make them
 *connectable*. M5 closes that: before it, a send only worked when one side had a
 public IP.
 
-**Transports.** TCP + Noise, and now **QUIC** (UDP) as well. QUIC is here
-because UDP hole punching succeeds materially more often than TCP
-simultaneous-open. Honest note: QUIC is encrypted by **TLS 1.3**, not Noise —
-libp2p's audited implementation, with the PeerId bound into the certificate. Two
-channel-encryption schemes therefore coexist; neither is homemade, and both are
-in the mandated stack (spec §6/§17). TCP is required; a QUIC bind failure is
-logged and tolerated, so a node with UDP blocked still works.
+**Transports.** TCP + Noise, and **QUIC** (UDP) as well. Honest note: QUIC is
+encrypted by **TLS 1.3**, not Noise — libp2p's audited implementation, with the
+PeerId bound into the certificate. Two channel-encryption schemes therefore
+coexist; neither is homemade, and both are in the mandated stack (spec §6/§17).
+TCP is required; a QUIC bind failure is logged and tolerated, so a node with UDP
+blocked still works.
+
+**Hole punching is pinned to TCP — deliberately.** In theory UDP hole punching
+succeeds more often than TCP simultaneous-open, which is the usual argument for
+carrying DCUtR over QUIC. We do **not** do that in M5. `libp2p-dcutr` is
+transport-agnostic (its candidate set is an unfiltered multiaddr LRU, filtering
+only *relayed* addresses), so left alone it would hole-punch over the QUIC+DCUtR
+integration — an integration this project has not vetted. M5 exists to make NAT
+traversal *reliable*, so it does not rest that mechanism on unvetted ground; the
+same rule was applied at M2 to unstabilized crypto.
+
+`dcutr_tcp::TcpOnlyDcutr` therefore wraps the DCUtR behaviour and drops
+`NewExternalAddrCandidate` events carrying a QUIC address, so a QUIC address is
+never offered as a hole-punch target. Everything else passes through — including
+`ExternalAddrConfirmed` for QUIC, so QUIC addresses still count for AutoNAT and
+still get published in the DHT locator. **QUIC remains a general transport** for
+ordinary direct and relayed connections; only hole punching is constrained.
+
+*Honest consequence:* hole-punch success is somewhat lower than a mature
+QUIC+DCUtR path would eventually give. *Honest limit of the guarantee:* the filter
+covers the candidates **we advertise**. Since every Prism node runs it, no Prism
+node advertises a QUIC candidate and hole punching across the network is TCP-only
+— but `dcutr` dials the *remote's* address list internally, which is not
+interceptable without forking the crate, so a peer running different or older code
+could still offer a QUIC address and we would attempt it.
+
+*Deferred additive improvement:* **DCUtR-over-QUIC hole punching**, to be enabled
+once libp2p's QUIC+DCUtR integration is demonstrably stable. It is a one-commit
+change — delete the wrapper and use `dcutr::Behaviour` directly — not a rewrite.
+Revisit when upgrading libp2p; treat evidence of stability (changelog, upstream
+issues, interop results) as the gate, not general theory.
 
 **The three pieces, and how they fit.**
 
@@ -262,9 +291,12 @@ Circuit addresses need no locator format change: the IP they carry is the
 
 **Running a relay** is opt-in (`--relay`) and **capped** (spec §6: relaying must
 be voluntary and capped, so a node is never drained against its owner's will):
-maximum simultaneous reservations and circuits, per-peer limits, circuit duration
-and byte ceilings, all operator-configurable, plus libp2p's per-peer and per-IP
-rate limiters. **A relay must also advertise its own external address** — the
+maximum simultaneous reservations and circuits, per-peer limits, a per-circuit
+**byte ceiling** (4 MiB by default) and a **duration cap** (120 s), all
+operator-configurable, plus libp2p's per-peer and per-IP rate limiters on
+reservation and circuit *requests*. To be precise about what this is not: there
+is **no bandwidth throttling** — a circuit is capped in total bytes and lifetime,
+not in rate. **A relay must also advertise its own external address** — the
 reservation it grants carries the addresses clients should use, and a relay with
 none makes clients reject the reservation outright. prism-net warns at startup in
 that case.
@@ -284,8 +316,12 @@ holding no personal conversations — not a personal one.
 Read this as the limit of what M5 provides. Prism does not claim more.
 
 - **A relay cannot read your messages.** Content is Olm-encrypted end to end and
-  additionally encrypted on each hop; the relay terminates no session and parses
-  no payload. It moves opaque bytes.
+  additionally encrypted on each hop; the relay terminates no Prism session and
+  parses no payload. It moves opaque bytes. To be exact about how this is tested:
+  the canary asserts the relay's application sink is **never invoked** — i.e. it
+  terminates no session — *not* that our code inspects relayed bytes for
+  plaintext. There is no such hook, and confidentiality does not rest on one: it
+  rests on Olm end-to-end encryption plus the Noise/TLS hop.
 - **A relay does see who talks to whom, in real time.** That is inherent to a
   standard Circuit Relay v2: it must know both ends to forward. Prism's relays
   are **non-retaining** — the code keeps only aggregate counters (current

@@ -12,7 +12,9 @@
 use libp2p::kad::store::MemoryStore;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{autonat, dcutr, identify, kad, mdns, relay, request_response};
+use libp2p::{autonat, identify, kad, mdns, relay, request_response};
+
+use crate::dcutr_tcp::TcpOnlyDcutr;
 
 use crate::protocol::{WireRequest, WireResponse};
 
@@ -55,5 +57,10 @@ pub(crate) struct PrismBehaviour {
     /// connection exists, both peers coordinate a simultaneous dial to punch
     /// through their NATs and continue **directly**, dropping the relay. This is
     /// what keeps relays a fallback rather than a permanent hop.
-    pub dcutr: Toggle<dcutr::Behaviour>,
+    ///
+    /// Wrapped in [`TcpOnlyDcutr`] so hole punching uses the mature **TCP**
+    /// simultaneous-open path only; QUIC remains a general transport but is never
+    /// offered as a hole-punch candidate (see `dcutr_tcp` for why and for the
+    /// honest limit of that guarantee).
+    pub dcutr: Toggle<TcpOnlyDcutr>,
 }
