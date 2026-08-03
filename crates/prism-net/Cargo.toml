@@ -25,6 +25,14 @@ libp2p = { version = "0.56", default-features = false, features = [
     "request-response",
     "cbor",
     "macros",
+    # M5 (NAT traversal + relays). All four are part of the mandated stack
+    # (CLAUDE.md "Mandated stack", spec §6/§17) — no non-libp2p dependency is
+    # added. `identify` is load-bearing rather than cosmetic: AutoNAT, DCUtR and
+    # relay reservations all rely on the observed-address exchange it provides.
+    "identify",
+    "autonat",
+    "dcutr",
+    "relay",
 ] }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 futures.workspace = true
