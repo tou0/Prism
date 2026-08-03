@@ -31,8 +31,8 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
-    autonat, identify, kad, mdns, noise, relay, request_response, tcp, yamux, Multiaddr, PeerId,
-    StreamProtocol, SwarmBuilder,
+    autonat, dcutr, identify, kad, mdns, noise, relay, request_response, tcp, yamux, Multiaddr,
+    PeerId, StreamProtocol, SwarmBuilder,
 };
 use prism_core::Seed32;
 use tokio::sync::{mpsc, oneshot};
@@ -99,6 +99,18 @@ pub enum DiscoverySource {
     Manual,
 }
 
+/// How an open connection to a peer is carried (M5). Public metadata, surfaced
+/// to the user so the path is never hidden from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionPath {
+    /// A direct connection — either dialled directly, or upgraded from a relayed
+    /// one by DCUtR hole punching. The peer learns our IP, as we learn theirs.
+    Direct,
+    /// Carried through a relay. The relay sees the pair in real time (it cannot
+    /// read content) and keeps no record of it.
+    Relayed,
+}
+
 /// A snapshot of the DHT's local state, for `status`.
 #[derive(Debug, Clone)]
 pub struct DhtStatus {
@@ -152,6 +164,8 @@ pub struct PeerRecord {
     pub connected: bool,
     /// How this peer was discovered.
     pub source: DiscoverySource,
+    /// How the current connection is carried, if one is open.
+    pub path: Option<ConnectionPath>,
 }
 
 /// Configuration for the networking subsystem, chosen by the daemon from CLI
@@ -178,6 +192,14 @@ pub struct NetConfig {
     /// in the following commits — DCUtR hole punching and relay clients. On by
     /// default; disabling it leaves a node with direct connectivity only.
     pub enable_nat_traversal: bool,
+    /// Relays this node may route through (M5), each `…/p2p/<peer-id>`.
+    ///
+    /// Selection is **automatic by default** in the sense that the node uses a
+    /// configured relay whenever it needs one, with no user action; listing
+    /// entries here is the **manual override** that pins which relays are
+    /// acceptable. Empty means no relay is available, so an unreachable peer
+    /// stays unreachable (honest: discovery is not reachability).
+    pub relays: Vec<String>,
     /// Act as a **relay** for NAT-bound peers (M5). `None` (the default) means
     /// this node relays nothing; `Some(limits)` opts in with operator-set caps.
     ///
@@ -232,6 +254,7 @@ impl Default for NetConfig {
             bootstrap: Vec::new(),
             external_addrs: Vec::new(),
             enable_nat_traversal: true,
+            relays: Vec::new(),
             relay_server: None,
         }
     }
@@ -403,6 +426,7 @@ impl NetHandle {
 /// the transport keypair.
 fn build_behaviour(
     keypair: &libp2p::identity::Keypair,
+    relay_client: relay::client::Behaviour,
     config: &NetConfig,
 ) -> Result<PrismBehaviour, Box<dyn std::error::Error + Send + Sync>> {
     let local_peer_id = keypair.public().to_peer_id();
@@ -489,6 +513,21 @@ fn build_behaviour(
         None => Toggle::from(None),
     };
 
+    // Relay client + DCUtR (M5), both following `enable_nat_traversal`.
+    //
+    // The relay-client *transport* is installed by the swarm builder
+    // unconditionally (it is part of the transport chain); disabling traversal
+    // drops the *behaviour*, which is what drives it — so no reservation is ever
+    // requested and no circuit can be dialled. The inert transport costs nothing.
+    let (relay_client, dcutr) = if config.enable_nat_traversal {
+        (
+            Toggle::from(Some(relay_client)),
+            Toggle::from(Some(dcutr::Behaviour::new(local_peer_id))),
+        )
+    } else {
+        (Toggle::from(None), Toggle::from(None))
+    };
+
     let codec = request_response::cbor::codec::Codec::<WireRequest, WireResponse>::default()
         .set_request_size_maximum(MAX_REQUEST_BYTES)
         .set_response_size_maximum(MAX_RESPONSE_BYTES);
@@ -505,6 +544,8 @@ fn build_behaviour(
         autonat,
         autonat_server,
         relay_server,
+        relay_client,
+        dcutr,
     })
 }
 
@@ -583,7 +624,11 @@ pub fn spawn(
         // TLS 1.3-encrypted (libp2p's audited implementation, PeerId bound into
         // the certificate) rather than Noise — see docs/net.md.
         .with_quic()
-        .with_behaviour(|kp| build_behaviour(kp, &config))
+        // Relay client transport (M5): required to dial `/p2p-circuit` addresses
+        // and to hold reservations on a relay.
+        .with_relay_client(noise::Config::new, yamux::Config::default)
+        .map_err(|e| NetError::Build(e.to_string()))?
+        .with_behaviour(|kp, relay_client| build_behaviour(kp, relay_client, &config))
         .map_err(|e| NetError::Build(e.to_string()))?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -625,9 +670,32 @@ pub fn spawn(
         })
         .collect();
 
+    // Relay addresses we may route through. Each must carry `/p2p/<peer-id>`:
+    // a circuit is addressed *through* a specific relay identity, so an entry
+    // without one is unusable and is dropped with a warning rather than guessed.
+    let relays: Vec<Multiaddr> = if config.enable_nat_traversal {
+        config
+            .relays
+            .iter()
+            .filter_map(|entry| {
+                let parsed = entry
+                    .parse::<Multiaddr>()
+                    .ok()
+                    .filter(|addr| addr.iter().any(|p| matches!(p, Protocol::P2p(_))));
+                if parsed.is_none() {
+                    warn!("ignoring unparseable or peer-id-less relay address");
+                }
+                parsed
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
-    let join =
-        tokio::spawn(SwarmTask::new(swarm, sink, cmd_rx, config.enable_dht, bootstrap).run());
+    let join = tokio::spawn(
+        SwarmTask::new(swarm, sink, cmd_rx, config.enable_dht, bootstrap, relays).run(),
+    );
 
     Ok((
         NetHandle {

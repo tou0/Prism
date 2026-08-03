@@ -95,6 +95,7 @@ async fn run(args: Args) -> Result<()> {
         bootstrap: args.bootstrap,
         external_addrs: args.external_address,
         enable_nat_traversal: !args.no_nat_traversal,
+        relays: Vec::new(),
         relay_server: None,
     };
 

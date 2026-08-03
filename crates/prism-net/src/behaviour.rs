@@ -12,7 +12,7 @@
 use libp2p::kad::store::MemoryStore;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{autonat, identify, kad, mdns, relay, request_response};
+use libp2p::{autonat, dcutr, identify, kad, mdns, relay, request_response};
 
 use crate::protocol::{WireRequest, WireResponse};
 
@@ -47,4 +47,13 @@ pub(crate) struct PrismBehaviour {
     /// operator asks for it, so a node is never drained against its owner's
     /// will. It terminates no session and can read nothing.
     pub relay_server: Toggle<relay::Behaviour>,
+    /// Circuit Relay v2 *client* (M5): lets us hold a reservation on a relay so
+    /// NAT-bound peers can be reached through it, and dial others the same way.
+    /// Follows `enable_nat_traversal`.
+    pub relay_client: Toggle<relay::client::Behaviour>,
+    /// DCUtR — Direct Connection Upgrade through Relay (M5): once a relayed
+    /// connection exists, both peers coordinate a simultaneous dial to punch
+    /// through their NATs and continue **directly**, dropping the relay. This is
+    /// what keeps relays a fallback rather than a permanent hop.
+    pub dcutr: Toggle<dcutr::Behaviour>,
 }

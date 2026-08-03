@@ -13,11 +13,12 @@ use std::collections::{HashMap, HashSet};
 use futures::stream::{FuturesUnordered, StreamExt};
 use libp2p::kad::store::RecordStore;
 use libp2p::kad::{self, GetRecordOk, QueryId, QueryResult, Quorum, Record, RecordKey};
+use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{
     Event as RrEvent, Message as RrMessage, OutboundRequestId, ResponseChannel,
 };
 use libp2p::swarm::SwarmEvent;
-use libp2p::{mdns, relay, Multiaddr, PeerId, Swarm};
+use libp2p::{dcutr, mdns, relay, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
@@ -25,7 +26,8 @@ use crate::behaviour::{PrismBehaviour, PrismBehaviourEvent};
 use crate::identity::{peer_id_from_key, peer_key_from_id, PeerKey};
 use crate::protocol::{WireRequest, WireResponse, WIRE_VERSION};
 use crate::{
-    DhtStatus, DiscoverySource, InboundSink, NatStatus, NetError, PeerRecord, Reachability,
+    ConnectionPath, DhtStatus, DiscoverySource, InboundSink, NatStatus, NetError, PeerRecord,
+    Reachability,
 };
 
 /// Reply channel for a `resolve_locator` query: the opaque record bytes, or
@@ -114,6 +116,21 @@ struct PeerEntry {
     addrs: Vec<Multiaddr>,
     connected: bool,
     source: DiscoverySource,
+    /// How the currently open connection is carried, if any (M5).
+    path: Option<ConnectionPath>,
+}
+
+/// Whether a multiaddr routes through a relay circuit.
+///
+/// A relayed address contains `/p2p-circuit`; that single component is the
+/// difference between "the peer learns our IP" and "a relay carries the bytes",
+/// so it is what decides the path we report to the user.
+fn path_of(addr: &Multiaddr) -> ConnectionPath {
+    if addr.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+        ConnectionPath::Relayed
+    } else {
+        ConnectionPath::Direct
+    }
 }
 
 /// The swarm task's owned state.
@@ -141,6 +158,10 @@ pub(crate) struct SwarmTask {
     dht_enabled: bool,
     /// Bootstrap peers to add and dial on startup (peer id + transport addr).
     bootstrap: Vec<(PeerId, Multiaddr)>,
+    /// Relay addresses we may route through (M5), each ending in `/p2p/<id>`.
+    /// Used both to request reservations (so peers can reach us) and to build
+    /// circuit addresses (so we can reach them).
+    relays: Vec<Multiaddr>,
     /// DHT `get_record` queries awaiting a result.
     pending_get: HashMap<QueryId, ResolveReply>,
     /// DHT `put_record` queries awaiting a result.
@@ -169,6 +190,7 @@ impl SwarmTask {
         cmd_rx: mpsc::Receiver<Command>,
         dht_enabled: bool,
         bootstrap: Vec<(PeerId, Multiaddr)>,
+        relays: Vec<Multiaddr>,
     ) -> Self {
         Self {
             swarm,
@@ -182,6 +204,7 @@ impl SwarmTask {
             listen_addrs: Vec::new(),
             dht_enabled,
             bootstrap,
+            relays,
             pending_get: HashMap::new(),
             pending_put: HashMap::new(),
             dht_peers: HashSet::new(),
@@ -217,9 +240,30 @@ impl SwarmTask {
         }
     }
 
+    /// Request a reservation on each configured relay (M5), so NAT-bound peers
+    /// can be reached through it. Listening on `<relay>/p2p-circuit` is what
+    /// makes libp2p connect to the relay and ask; the relay may refuse (its caps),
+    /// which is not fatal — we simply have no relayed path via that one.
+    ///
+    /// Reservations are requested whenever relays are configured, without waiting
+    /// for AutoNAT: waiting would leave a NAT-bound node unreachable for the
+    /// length of a probe, and a publicly-reachable node holding an unused
+    /// reservation costs only that relay slot. Refining this to skip reservations
+    /// once AutoNAT confirms us `Public` is a deliberate later improvement.
+    fn start_relay_reservations(&mut self) {
+        for relay in self.relays.clone() {
+            let circuit = relay.clone().with(Protocol::P2pCircuit);
+            match self.swarm.listen_on(circuit) {
+                Ok(_) => debug!(%relay, "requesting a relay reservation"),
+                Err(e) => warn!(error = %e, "could not request a relay reservation"),
+            }
+        }
+    }
+
     /// Run until the command channel closes (daemon shutdown).
     pub(crate) async fn run(mut self) {
         self.start_bootstrap();
+        self.start_relay_reservations();
         loop {
             tokio::select! {
                 event = self.swarm.select_next_some() => self.on_swarm_event(event),
@@ -255,6 +299,7 @@ impl SwarmTask {
                         addrs: entry.addrs.iter().map(Multiaddr::to_string).collect(),
                         connected: entry.connected,
                         source: entry.source,
+                        path: entry.path,
                     })
                     .collect();
                 let _ = reply.send(peers);
@@ -445,11 +490,45 @@ impl SwarmTask {
 
     /// Resolve a peer key to its `PeerId` and known addresses, if discovered.
     fn addresses_for(&self, key: &PeerKey) -> Option<(PeerId, Vec<Multiaddr>)> {
-        let entry = self.by_key.get(key)?;
-        if entry.addrs.is_empty() {
+        let peer_id = match self.by_key.get(key) {
+            Some(entry) => entry.peer_id,
+            // Never discovered, but its PeerId is derivable from the identity key
+            // — enough to address a relay circuit, which is the only route to a
+            // peer we have no direct address for.
+            None => peer_id_from_key(key)?,
+        };
+
+        // Direct addresses first: a direct connection is cheaper, faster, and
+        // involves no third party. Only when there is none do we fall back.
+        let direct: Vec<Multiaddr> = self
+            .by_key
+            .get(key)
+            .map(|entry| entry.addrs.clone())
+            .unwrap_or_default();
+        if !direct.is_empty() {
+            return Some((peer_id, direct));
+        }
+
+        // Fallback: reach the peer through each configured relay, by addressing
+        // `<relay>/p2p-circuit/p2p/<target>`. This is the automatic direct->relay
+        // fallback — the caller does not choose, and the user needs no action.
+        // Once the circuit is up, DCUtR tries to upgrade it to a direct
+        // connection; if that succeeds the relay drops out of the path.
+        let circuits: Vec<Multiaddr> = self
+            .relays
+            .iter()
+            .map(|relay| {
+                relay
+                    .clone()
+                    .with(Protocol::P2pCircuit)
+                    .with(Protocol::P2p(peer_id))
+            })
+            .collect();
+        if circuits.is_empty() {
+            // No direct address and no relay: honestly unreachable.
             return None;
         }
-        Some((entry.peer_id, entry.addrs.clone()))
+        Some((peer_id, circuits))
     }
 
     fn on_swarm_event(&mut self, event: SwarmEvent<PrismBehaviourEvent>) {
@@ -489,6 +568,18 @@ impl SwarmTask {
             // AutoNAT then verifies — we never trust an observed address on a
             // peer's word alone, so nothing is recorded here.
             SwarmEvent::Behaviour(PrismBehaviourEvent::Identify(_)) => {}
+            // DCUtR (M5): a hole-punch attempt finished. Success means the
+            // relayed connection has been replaced by a direct one; the
+            // ConnectionEstablished event that follows updates the reported path.
+            SwarmEvent::Behaviour(PrismBehaviourEvent::Dcutr(dcutr::Event { result, .. })) => {
+                debug!(punched = result.is_ok(), "DCUtR hole-punch attempt");
+            }
+            // Relay client (M5): reservation accepted/closed on a relay we use.
+            // Peer ids of relays are public infrastructure metadata, not user
+            // data, so they are debug-loggable.
+            SwarmEvent::Behaviour(PrismBehaviourEvent::RelayClient(event)) => {
+                debug!(?event, "relay client event");
+            }
             SwarmEvent::Behaviour(PrismBehaviourEvent::AutonatServer(_)) => {}
             // Relay server (M5). **Non-retention lives here, as an absence**:
             // these events carry the peer ids on both ends of a circuit, and we
@@ -537,7 +628,10 @@ impl SwarmTask {
                     }
                 }
             }
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            SwarmEvent::ConnectionEstablished {
+                peer_id, endpoint, ..
+            } => {
+                let path = path_of(endpoint.get_remote_address());
                 if let Some(key) = peer_key_from_id(&peer_id) {
                     // A connection without prior discovery (an inbound dial):
                     // `source` is only applied if this is the first sighting;
@@ -545,13 +639,18 @@ impl SwarmTask {
                     self.upsert_peer(key, Some(peer_id), None, DiscoverySource::Manual);
                     if let Some(entry) = self.by_key.get_mut(&key) {
                         entry.connected = true;
+                        // A DCUtR upgrade replaces a relayed connection with a
+                        // direct one, so the newest connection decides the path.
+                        entry.path = Some(path);
                     }
+                    debug!(?path, "connection established");
                 }
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 if let Some(key) = self.by_id.get(&peer_id).copied() {
                     if let Some(entry) = self.by_key.get_mut(&key) {
                         entry.connected = false;
+                        entry.path = None;
                     }
                 }
             }
@@ -679,6 +778,9 @@ impl SwarmTask {
             addrs: Vec::new(),
             connected: false,
             source,
+            // Discovery alone opens no connection, so there is no path yet;
+            // ConnectionEstablished fills it in.
+            path: None,
         });
         entry.peer_id = peer_id;
         if let Some(addr) = addr {
