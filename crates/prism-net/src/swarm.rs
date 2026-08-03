@@ -24,11 +24,32 @@ use tracing::{debug, warn};
 use crate::behaviour::{PrismBehaviour, PrismBehaviourEvent};
 use crate::identity::{peer_id_from_key, peer_key_from_id, PeerKey};
 use crate::protocol::{WireRequest, WireResponse, WIRE_VERSION};
-use crate::{DhtStatus, DiscoverySource, InboundSink, NetError, PeerRecord};
+use crate::{
+    DhtStatus, DiscoverySource, InboundSink, NatStatus, NetError, PeerRecord, Reachability,
+};
 
 /// Reply channel for a `resolve_locator` query: the opaque record bytes, or
 /// `None` if the query finished without finding a record.
 type ResolveReply = oneshot::Sender<Result<Option<Vec<u8>>, NetError>>;
+
+/// Turn per-address AutoNAT results into one verdict (M5).
+///
+/// AutoNAT v2 reports **per address**, deliberately: it has no aggregate
+/// "am I behind a NAT" answer, so this is where that question is decided.
+/// * any address dialled back ⇒ [`Reachability::Public`] (we are reachable
+///   *somewhere*, which is all a peer needs);
+/// * no results at all ⇒ [`Reachability::Unknown`] — an honest "not yet known",
+///   never optimistically reported as reachable;
+/// * results exist and all failed ⇒ [`Reachability::Private`].
+fn aggregate_reachability(results: &HashMap<Multiaddr, bool>) -> Reachability {
+    if results.values().any(|ok| *ok) {
+        Reachability::Public
+    } else if results.is_empty() {
+        Reachability::Unknown
+    } else {
+        Reachability::Private
+    }
+}
 
 /// A command from the daemon to the swarm task. Each carries a `oneshot` for
 /// the reply the daemon awaits.
@@ -74,6 +95,8 @@ pub(crate) enum Command {
     },
     /// Snapshot the DHT's local state.
     DhtStatus { reply: oneshot::Sender<DhtStatus> },
+    /// Snapshot our own reachability as AutoNAT sees it (M5).
+    NatStatus { reply: oneshot::Sender<NatStatus> },
     /// Advertise a globally-routable address as ours (confirms it to the swarm,
     /// which upgrades Kademlia to server mode so we serve/store records).
     AddExternalAddress { addr: String },
@@ -125,6 +148,11 @@ pub(crate) struct SwarmTask {
     /// Distinct peers seen entering the routing table (approximate liveness for
     /// `status`; never decremented — a coarse "have we joined?" signal).
     dht_peers: HashSet<PeerId>,
+    /// Last AutoNAT verdict per probed address (M5): `true` = dialled back
+    /// successfully. Keyed by address because reachability is per-address — one
+    /// confirmed address is enough to be Public, while Private requires that
+    /// every address probed so far has failed.
+    autonat_results: HashMap<Multiaddr, bool>,
 }
 
 impl SwarmTask {
@@ -150,6 +178,32 @@ impl SwarmTask {
             pending_get: HashMap::new(),
             pending_put: HashMap::new(),
             dht_peers: HashSet::new(),
+            autonat_results: HashMap::new(),
+        }
+    }
+
+    /// Aggregate the per-address AutoNAT results into a single verdict.
+    ///
+    /// One confirmed address is enough to be [`Reachability::Public`] (we are
+    /// dialable *somewhere*); [`Reachability::Private`] requires that every
+    /// address probed so far failed; with no results the answer is honestly
+    /// [`Reachability::Unknown`] rather than an optimistic guess.
+    fn reachability(&self) -> Reachability {
+        aggregate_reachability(&self.autonat_results)
+    }
+
+    /// Snapshot our reachability for `status`.
+    fn nat_status(&self) -> NatStatus {
+        let confirmed_addrs = self
+            .autonat_results
+            .iter()
+            .filter(|(_, ok)| **ok)
+            .map(|(addr, _)| addr.to_string())
+            .collect();
+        NatStatus {
+            reachability: self.reachability(),
+            confirmed_addrs,
+            probes: self.autonat_results.len(),
         }
     }
 
@@ -279,6 +333,9 @@ impl SwarmTask {
                     routing_peers: self.dht_peers.len(),
                 });
             }
+            Command::NatStatus { reply } => {
+                let _ = reply.send(self.nat_status());
+            }
             Command::AddExternalAddress { addr } => match addr.parse::<Multiaddr>() {
                 Ok(addr) => self.swarm.add_external_address(addr),
                 Err(_) => warn!("ignoring unparseable external address"),
@@ -405,6 +462,24 @@ impl SwarmTask {
                 }
             }
             SwarmEvent::Behaviour(PrismBehaviourEvent::Kad(event)) => self.on_kad_event(event),
+            // AutoNAT v2 (M5): one dial-back probe finished. The behaviour has
+            // already told the swarm to confirm the address on success; we only
+            // record the per-address verdict so `status` can report reachability.
+            SwarmEvent::Behaviour(PrismBehaviourEvent::Autonat(event)) => {
+                let reachable = event.result.is_ok();
+                self.autonat_results.insert(event.tested_addr, reachable);
+                debug!(
+                    reachable,
+                    verdict = ?self.reachability(),
+                    "AutoNAT probe completed"
+                );
+            }
+            // identify (M5): peers report the address they observe for us. The
+            // behaviour turns that into an external-address *candidate*, which
+            // AutoNAT then verifies — we never trust an observed address on a
+            // peer's word alone, so nothing is recorded here.
+            SwarmEvent::Behaviour(PrismBehaviourEvent::Identify(_)) => {}
+            SwarmEvent::Behaviour(PrismBehaviourEvent::AutonatServer(_)) => {}
             SwarmEvent::Behaviour(PrismBehaviourEvent::Rr(RrEvent::Message {
                 peer,
                 message,
@@ -576,5 +651,47 @@ impl SwarmTask {
                 entry.addrs.push(addr);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(s: &str) -> Multiaddr {
+        match s.parse() {
+            Ok(a) => a,
+            Err(_) => panic!("test address must parse: {s}"),
+        }
+    }
+
+    /// The AutoNAT v2 -> verdict synthesis, which is ours rather than the
+    /// library's (v2 reports per address and has no aggregate status).
+    #[test]
+    fn reachability_is_aggregated_honestly() {
+        let mut r = HashMap::new();
+        assert_eq!(
+            aggregate_reachability(&r),
+            Reachability::Unknown,
+            "no probe has completed: the honest answer is Unknown, not Public"
+        );
+
+        r.insert(addr("/ip4/203.0.113.9/tcp/4001"), false);
+        assert_eq!(
+            aggregate_reachability(&r),
+            Reachability::Private,
+            "every probed address failed"
+        );
+
+        r.insert(addr("/ip4/203.0.113.9/udp/4001/quic-v1"), true);
+        assert_eq!(
+            aggregate_reachability(&r),
+            Reachability::Public,
+            "one dialable address is enough to be reachable"
+        );
+
+        // A later failure on another address must not undo a confirmed one.
+        r.insert(addr("/ip4/203.0.113.9/tcp/9999"), false);
+        assert_eq!(aggregate_reachability(&r), Reachability::Public);
     }
 }

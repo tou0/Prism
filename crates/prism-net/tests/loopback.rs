@@ -90,6 +90,9 @@ fn transport_only() -> NetConfig {
         enable_dht: false,
         bootstrap: Vec::new(),
         external_addrs: Vec::new(),
+        // These tests assert the plain transport contract; NAT traversal has its
+        // own harness, and leaving AutoNAT off keeps them deterministic.
+        enable_nat_traversal: false,
     }
 }
 
@@ -101,6 +104,7 @@ fn dht_only(bootstrap: Vec<String>) -> NetConfig {
         enable_dht: true,
         bootstrap,
         external_addrs: Vec::new(),
+        enable_nat_traversal: false,
     }
 }
 

@@ -31,7 +31,8 @@ use libp2p::multiaddr::Protocol;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
 use libp2p::{
-    kad, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId, StreamProtocol, SwarmBuilder,
+    autonat, identify, kad, mdns, noise, request_response, tcp, yamux, Multiaddr, PeerId,
+    StreamProtocol, SwarmBuilder,
 };
 use prism_core::Seed32;
 use tokio::sync::{mpsc, oneshot};
@@ -45,6 +46,15 @@ use protocol::{WireRequest, WireResponse, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,
 /// Kademlia protocol id — Prism-specific, so nodes never join the public IPFS
 /// DHT or mix records with unrelated networks. Carries the DHT wire version.
 const KAD_PROTOCOL: StreamProtocol = StreamProtocol::new("/prism/kad/1.0.0");
+
+/// identify protocol id — Prism-specific, so we only exchange peer metadata
+/// within this network. Versioned like the other Prism protocols.
+const IDENTIFY_PROTOCOL: &str = "/prism/id/1.0.0";
+
+/// Agent string broadcast by identify. Deliberately **coarse** — no build
+/// version — since it reaches every peer we meet and an exact version would help
+/// target known-vulnerable builds.
+const AGENT_VERSION: &str = "prism";
 use swarm::{Command, SwarmTask};
 
 /// Errors surfaced by the networking layer. No variant carries key or secret
@@ -158,7 +168,16 @@ pub struct NetConfig {
     pub bootstrap: Vec<String>,
     /// Globally-routable multiaddrs to advertise as ours (a public/VPS node
     /// knows its own address; a NAT-bound node leaves this empty in M4).
+    ///
+    /// Since M5 this is a *declaration*, not the only source: AutoNAT can
+    /// confirm an address discovered via identify, and a node that declares one
+    /// here also runs the AutoNAT **server** side (it is asserting it is
+    /// publicly reachable, so it can dial others back).
     pub external_addrs: Vec<String>,
+    /// Run NAT traversal (M5): AutoNAT reachability detection, and — once wired
+    /// in the following commits — DCUtR hole punching and relay clients. On by
+    /// default; disabling it leaves a node with direct connectivity only.
+    pub enable_nat_traversal: bool,
 }
 
 impl Default for NetConfig {
@@ -168,8 +187,35 @@ impl Default for NetConfig {
             enable_dht: true,
             bootstrap: Vec::new(),
             external_addrs: Vec::new(),
+            enable_nat_traversal: true,
         }
     }
+}
+
+/// What AutoNAT has concluded about our reachability from outside. Public,
+/// non-secret metadata.
+///
+/// Deliberately three-valued: "we have not found out yet" is a distinct and
+/// honest answer, and must not be reported as "reachable" or "behind a NAT".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reachability {
+    /// No probe has completed yet (or NAT traversal is disabled).
+    Unknown,
+    /// At least one of our addresses was dialled back successfully.
+    Public,
+    /// Every address probed so far failed — we are behind a NAT or firewall.
+    Private,
+}
+
+/// A snapshot of our own reachability, for `status`.
+#[derive(Debug, Clone)]
+pub struct NatStatus {
+    /// The current verdict.
+    pub reachability: Reachability,
+    /// Addresses AutoNAT confirmed dialable from outside (public metadata).
+    pub confirmed_addrs: Vec<String>,
+    /// How many address probes have completed (0 ⇒ the verdict is `Unknown`).
+    pub probes: usize,
 }
 
 /// Handle the daemon uses to drive the swarm task. Cloneable.
@@ -282,6 +328,13 @@ impl NetHandle {
     }
 
     /// Snapshot the DHT's local state (for `status`).
+    /// Snapshot our own reachability as AutoNAT sees it (M5). Public metadata.
+    pub async fn nat_status(&self) -> Result<NatStatus, NetError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Command::NatStatus { reply }).await?;
+        rx.await.map_err(|_| NetError::Offline)
+    }
+
     pub async fn dht_status(&self) -> Result<DhtStatus, NetError> {
         let (reply, rx) = oneshot::channel();
         self.send(Command::DhtStatus { reply }).await?;
@@ -337,6 +390,35 @@ fn build_behaviour(
         Toggle::from(None)
     };
 
+    // identify (M5): always on. Peers report the address they observe for us,
+    // which is the only source of external-address candidates for AutoNAT, and
+    // DCUtR/relay reservations rest on the same address knowledge.
+    //
+    // `agent_version` is deliberately coarse ("prism", no build version): it is
+    // broadcast to every peer we meet, and advertising an exact build would help
+    // an attacker target known-vulnerable versions. It is not our version
+    // negotiation mechanism — that stays multistream-select inside Noise.
+    let identify = identify::Behaviour::new(
+        identify::Config::new(IDENTIFY_PROTOCOL.to_owned(), keypair.public())
+            .with_agent_version(AGENT_VERSION.to_owned()),
+    );
+
+    // AutoNAT v2 client: verifies candidate addresses via dial-backs.
+    let autonat = if config.enable_nat_traversal {
+        Toggle::from(Some(autonat::v2::client::Behaviour::default()))
+    } else {
+        Toggle::from(None)
+    };
+
+    // AutoNAT v2 server: only a node declaring itself publicly reachable can
+    // usefully dial others back, so this follows `external_addrs` (the same rule
+    // that puts Kademlia into server mode).
+    let autonat_server = if !config.external_addrs.is_empty() {
+        Toggle::from(Some(autonat::v2::server::Behaviour::default()))
+    } else {
+        Toggle::from(None)
+    };
+
     let codec = request_response::cbor::codec::Codec::<WireRequest, WireResponse>::default()
         .set_request_size_maximum(MAX_REQUEST_BYTES)
         .set_response_size_maximum(MAX_RESPONSE_BYTES);
@@ -345,7 +427,14 @@ fn build_behaviour(
         [(PROTOCOL_ID, request_response::ProtocolSupport::Full)],
         request_response::Config::default().with_request_timeout(Duration::from_secs(20)),
     );
-    Ok(PrismBehaviour { mdns, kad, rr })
+    Ok(PrismBehaviour {
+        mdns,
+        kad,
+        rr,
+        identify,
+        autonat,
+        autonat_server,
+    })
 }
 
 /// Derive a QUIC listen address from a TCP one: `/ip4/A/tcp/P` becomes

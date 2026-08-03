@@ -12,13 +12,14 @@
 use libp2p::kad::store::MemoryStore;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::NetworkBehaviour;
-use libp2p::{kad, mdns, request_response};
+use libp2p::{autonat, identify, kad, mdns, request_response};
 
 use crate::protocol::{WireRequest, WireResponse};
 
 /// Prism's network behaviour. mDNS finds peers on the LAN; Kademlia finds them
 /// off-LAN via signed locator records; request-response carries the (opaque)
-/// bundle fetches and message deliveries.
+/// bundle fetches and message deliveries; identify + AutoNAT establish whether
+/// we are reachable from outside (M5).
 #[derive(NetworkBehaviour)]
 pub(crate) struct PrismBehaviour {
     /// Local-network peer discovery (optional; link-local multicast).
@@ -27,4 +28,18 @@ pub(crate) struct PrismBehaviour {
     pub kad: Toggle<kad::Behaviour<MemoryStore>>,
     /// The Prism message protocol (opaque payloads, CBOR-framed).
     pub rr: request_response::cbor::Behaviour<WireRequest, WireResponse>,
+    /// Peer metadata exchange (M5). **Load-bearing, not cosmetic**: peers report
+    /// the address they observe for us, which is the only source of external
+    /// address *candidates* for AutoNAT to verify, and DCUtR and relay
+    /// reservations depend on that same address knowledge. Always enabled.
+    pub identify: identify::Behaviour,
+    /// AutoNAT v2 *client* (M5): asks servers to dial our candidate addresses
+    /// back, so we learn whether we are publicly reachable or NAT-bound. On
+    /// success it emits `ExternalAddrConfirmed`, which promotes the candidate to
+    /// a real external address. Disabled when NAT traversal is off.
+    pub autonat: Toggle<autonat::v2::client::Behaviour>,
+    /// AutoNAT v2 *server* (M5): performs those dial-backs for other nodes.
+    /// Enabled only on a node the operator declares publicly reachable — a
+    /// NAT-bound node cannot usefully dial anyone back.
+    pub autonat_server: Toggle<autonat::v2::server::Behaviour>,
 }

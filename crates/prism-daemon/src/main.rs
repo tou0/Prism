@@ -44,6 +44,11 @@ struct Args {
     /// Disable the Kademlia DHT (LAN-only node, mDNS only).
     #[arg(long = "no-dht")]
     no_dht: bool,
+    /// Disable NAT traversal (AutoNAT reachability detection, hole punching, and
+    /// relay use). Leaves the node with direct connectivity only — it will not
+    /// reach peers behind NAT, nor be reachable if it is itself behind one.
+    #[arg(long = "no-nat-traversal")]
+    no_nat_traversal: bool,
 }
 
 fn main() -> Result<()> {
@@ -89,6 +94,7 @@ async fn run(args: Args) -> Result<()> {
         enable_dht: !args.no_dht,
         bootstrap: args.bootstrap,
         external_addrs: args.external_address,
+        enable_nat_traversal: !args.no_nat_traversal,
     };
 
     let listener = bind_secure(&socket_path)
