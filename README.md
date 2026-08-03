@@ -35,8 +35,8 @@ for the full design.
 > published, and `status` shows exactly what. **After M4, two nodes may
 > _discover_ each other yet not always _connect_** — NAT traversal / relays are
 > M5. The M3 `prism chat` TUI (arrow-first, real-time push) and M2b LAN messaging
-> are unchanged. Still **no NAT traversal, relays, offline delivery, or message
-> history** — those are later milestones.
+> are unchanged. (NAT traversal and relays landed in M5, above; offline delivery
+> and message history remain later milestones.)
 
 ## Workspace layout
 
@@ -44,7 +44,7 @@ for the full design.
 |---|---|
 | `prism-core` | Core types, identity, encrypted sessions (vodozemac), keystore, ratchet store (no network/UI deps). |
 | `prism-proto` | IPC message types and the framed serde codec. |
-| `prism-net` | libp2p networking layer: mDNS + Kademlia DHT discovery, Noise request/response (opaque bytes only; no application crypto — it validates locator *shape*, and delegates signature/key checks to `prism-core`). |
+| `prism-net` | libp2p networking layer: mDNS + Kademlia DHT discovery, NAT traversal (AutoNAT / DCUtR / Circuit Relay v2), TCP+QUIC, Noise request/response (opaque bytes only; no application crypto — it validates locator *shape*, and delegates signature/key checks to `prism-core`). |
 | `prism-daemon` | Background daemon `prismd`: holds keys, runs the network, exposes the IPC socket. |
 | `prism-cli` | Thin client `prism`: one-shot commands and the interactive TUI (`chat`), over IPC. |
 
@@ -139,7 +139,11 @@ memory only and are gone when you quit.
 Both binaries accept `--socket <PATH>`; the daemon also accepts
 `--keystore <PATH>`, `--sessions <PATH>`, `--listen <MULTIADDR>`, and the M4 DHT
 flags `--bootstrap <MULTIADDR/p2p/ID>` (repeatable), `--external-address
-<MULTIADDR>` (repeatable), `--no-mdns`, and `--no-dht`.
+<MULTIADDR>` (repeatable), `--no-mdns`, and `--no-dht`; plus the M5 NAT/relay
+flags `--relay` (act as a capped relay), `--relay-addr <MULTIADDR/p2p/ID>`
+(repeatable, relays to route through), `--relay-max-circuits` /
+`--relay-max-reservations`, `--no-nat-traversal`, and `--unattended
+--passphrase-file <PATH>` (see the trade-off in `docs/net.md`).
 
 ## License
 
