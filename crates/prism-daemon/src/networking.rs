@@ -282,10 +282,19 @@ pub async fn handle_peers(state: &AppState) -> Response {
                 peer_id: p.peer_id,
                 connected: p.connected,
                 source: map_source(p.source),
+                path: p.path.map(map_path),
             })
         })
         .collect();
     Response::Peers { peers }
+}
+
+/// Map a networking connection path to its IPC mirror.
+pub(crate) fn map_path(path: prism_net::ConnectionPath) -> prism_proto::PeerPath {
+    match path {
+        prism_net::ConnectionPath::Direct => prism_proto::PeerPath::Direct,
+        prism_net::ConnectionPath::Relayed => prism_proto::PeerPath::Relayed,
+    }
 }
 
 /// Map a networking discovery source to its IPC mirror.
@@ -326,6 +335,7 @@ pub async fn handle_status(state: &AppState) -> Response {
     } else {
         Vec::new()
     };
+    let nat = handles.net.nat_status().await.ok();
     Response::Status {
         handle,
         peer_id: handles.net.local_peer_id().to_owned(),
@@ -334,6 +344,13 @@ pub async fn handle_status(state: &AppState) -> Response {
         dht_enabled: state.net_config.enable_dht,
         dht_routing_peers: dht.map(|d| d.routing_peers).unwrap_or(0),
         published_addrs,
+        reachability: match nat.map(|n| n.reachability) {
+            Some(prism_net::Reachability::Public) => prism_proto::ReachabilityInfo::Public,
+            Some(prism_net::Reachability::Private) => prism_proto::ReachabilityInfo::Private,
+            _ => prism_proto::ReachabilityInfo::Unknown,
+        },
+        relaying: state.net_config.relay_server.is_some(),
+        relays: state.net_config.relays.clone(),
     }
 }
 

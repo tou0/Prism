@@ -70,6 +70,7 @@ pub fn spawn_peer_watch(
                             peer_id: record.peer_id,
                             connected: record.connected,
                             source: crate::networking::map_source(record.source),
+                            path: record.path.map(crate::networking::map_path),
                         },
                     ))
                 })
@@ -132,6 +133,7 @@ mod tests {
             peer_id: "pid".to_owned(),
             connected,
             source: prism_proto::PeerSource::Mdns,
+            path: None,
         }
     }
 

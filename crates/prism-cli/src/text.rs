@@ -55,6 +55,25 @@ pub fn resolve_not_found(handle: &str) -> String {
 pub const RESOLVE_NO_ADDRS: &str =
     "  (no reachable address published — discovered, but not directly connectable until relays, M5)";
 
+/// Short label for how a connection is carried. Shown so the user always knows
+/// whether a third party is carrying their traffic.
+pub fn peer_path_label(path: Option<prism_proto::PeerPath>) -> &'static str {
+    match path {
+        Some(prism_proto::PeerPath::Direct) => "direct",
+        Some(prism_proto::PeerPath::Relayed) => "relayed",
+        None => "no connection",
+    }
+}
+
+/// Reachability, phrased so "unknown" is never dressed up as reachable.
+pub fn reachability_label(r: prism_proto::ReachabilityInfo) -> &'static str {
+    match r {
+        prism_proto::ReachabilityInfo::Public => "reachable from the internet",
+        prism_proto::ReachabilityInfo::Private => "behind NAT (relays needed)",
+        prism_proto::ReachabilityInfo::Unknown => "not determined yet",
+    }
+}
+
 /// Short label for how a peer was discovered.
 pub fn peer_source_label(source: prism_proto::PeerSource) -> &'static str {
     match source {

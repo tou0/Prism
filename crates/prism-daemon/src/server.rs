@@ -269,6 +269,12 @@ fn join_error(_: JoinError) -> Response {
 
 /// `Init`: generate (or derive) the identity daemon-side, seal the keystore,
 /// and leave it unlocked. The mnemonic, if any, is returned exactly once.
+// `Response` is a large enum (its `Status` variant carries several vectors), so
+// clippy flags `Result<_, Response>` crossing the `spawn_blocking` boundary
+// below. Boxing it would ripple through every caller for no real gain: these
+// Results are constructed once per identity operation (init/restore/unlock),
+// never in a hot path, and the large `Status` variant never occurs in them.
+#[allow(clippy::result_large_err)]
 async fn handle_init(
     state: &AppState,
     nick: String,
@@ -326,6 +332,7 @@ async fn handle_init(
 
 /// `Restore`: like `Init`, but the seed is derived from the given recovery
 /// phrase — deterministically the same identity as when it was created.
+#[allow(clippy::result_large_err)]
 async fn handle_restore(
     state: &AppState,
     nick: String,
@@ -410,6 +417,7 @@ pub async fn unlock_with_passphrase(state: &AppState, passphrase: prism_core::Pa
     ok
 }
 
+#[allow(clippy::result_large_err)]
 async fn handle_unlock(state: &AppState, passphrase: Sensitive) -> Response {
     let mut unlocked = state.unlocked.write().await;
     let path = state.keystore_path.clone();

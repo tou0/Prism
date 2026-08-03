@@ -400,6 +400,7 @@ mod tests {
                     peer_id: "pid".to_owned(),
                     connected: true,
                     source: prism_proto::PeerSource::Mdns,
+                    path: None,
                 }],
             }),
         );
@@ -564,6 +565,7 @@ mod tests {
             peer_id: "pid".to_owned(),
             connected: true,
             source: prism_proto::PeerSource::Mdns,
+            path: None,
         };
         update(&mut s, Action::Push(Event::PeerDiscovered { peer: up }));
         assert!(s.peers[0].connected);
@@ -573,6 +575,7 @@ mod tests {
             peer_id: "pid".to_owned(),
             connected: false,
             source: prism_proto::PeerSource::Mdns,
+            path: None,
         };
         update(&mut s, Action::Push(Event::PeerDiscovered { peer: down }));
         assert_eq!(s.peers.len(), 1, "an upsert must not duplicate the peer");
@@ -587,6 +590,7 @@ mod tests {
             peer_id: "pid".to_owned(),
             connected: true,
             source: prism_proto::PeerSource::Mdns,
+            path: None,
         };
         update(
             &mut s,

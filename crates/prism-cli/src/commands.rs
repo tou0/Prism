@@ -187,10 +187,11 @@ pub async fn peers(socket_path: &Path) -> Result<()> {
                         "discovered"
                     };
                     println!(
-                        "  #{}  [{}, via {}]",
+                        "  #{}  [{}, via {}, {}]",
                         peer.fingerprint,
                         state,
-                        text::peer_source_label(peer.source)
+                        text::peer_source_label(peer.source),
+                        text::peer_path_label(peer.path)
                     );
                     println!("    peer id: {}", peer.peer_id);
                 }
@@ -212,6 +213,9 @@ pub async fn status(socket_path: &Path) -> Result<()> {
             dht_enabled,
             dht_routing_peers,
             published_addrs,
+            reachability,
+            relaying,
+            relays,
         } => {
             println!("  handle:    {handle}");
             println!("  peer id:   {peer_id}");
@@ -237,6 +241,16 @@ pub async fn status(socket_path: &Path) -> Result<()> {
                 }
             } else {
                 println!("  DHT:       disabled");
+            }
+            println!("  NAT:       {}", text::reachability_label(reachability));
+            if relaying {
+                println!("  relay:     serving relayed circuits for other peers");
+            }
+            if !relays.is_empty() {
+                println!("  relays:");
+                for relay in relays {
+                    println!("    {relay}");
+                }
             }
             Ok(())
         }

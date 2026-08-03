@@ -17,11 +17,14 @@ use crate::sensitive::Sensitive;
 /// client↔daemon protocol. The daemon rejects mismatched versions; a richer
 /// compatibility window is deferred with the rest of version negotiation.
 ///
+/// Bumped to `4` for M5 (NAT traversal + relays): [`PeerInfo::path`] (direct vs
+/// relayed) and the reachability/relay fields on [`Response::Status`].
+///
 /// Bumped to `3` for M4 (DHT discovery): [`Request::Resolve`] /
 /// [`Response::Resolved`], the DHT fields on [`Response::Status`], and the
 /// discovery [`PeerSource`] on [`PeerInfo`]. Client and daemon ship from the
 /// same build, so the strict version match is not a compatibility concern here.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// The user's choice of recovery mode at identity creation (spec §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +187,13 @@ pub enum Response {
         /// locator (no reachable address advertised). Shown so the user can see
         /// exactly what is exposed (honest IP posture, spec §13).
         published_addrs: Vec<String>,
+        /// Our reachability from outside, as AutoNAT sees it (M5).
+        reachability: ReachabilityInfo,
+        /// Whether this node acts as a relay for other peers (M5).
+        relaying: bool,
+        /// Relays we may route through (public infrastructure metadata, not
+        /// secret — the user is shown who could be carrying their traffic).
+        relays: Vec<String>,
     },
     /// The request could not be served; carries a human-readable reason.
     Error {
@@ -236,6 +246,27 @@ pub struct InboxItem {
     pub body: Sensitive,
 }
 
+/// How an open connection to a peer is carried (M5). Mirror of prism-net's
+/// `ConnectionPath`, kept here so the IPC layer needs no networking dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PeerPath {
+    /// Direct — dialled directly, or upgraded from relayed by hole punching.
+    Direct,
+    /// Carried through a relay (which cannot read the traffic).
+    Relayed,
+}
+
+/// Our own reachability from outside, as AutoNAT sees it (M5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReachabilityInfo {
+    /// No probe has completed yet — honestly unknown, not assumed reachable.
+    Unknown,
+    /// At least one of our addresses was dialled back successfully.
+    Public,
+    /// Every address probed so far failed: we are behind a NAT or firewall.
+    Private,
+}
+
 /// How a peer was discovered (M4). Mirror of prism-net's `DiscoverySource`,
 /// kept in the proto crate so the IPC layer carries no networking dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +290,8 @@ pub struct PeerInfo {
     pub connected: bool,
     /// How this peer was discovered (mDNS, DHT, or seeded manually).
     pub source: PeerSource,
+    /// How the open connection is carried, if one is open (M5).
+    pub path: Option<PeerPath>,
 }
 
 /// Transport envelope wrapping every IPC message with a protocol version.
@@ -326,6 +359,7 @@ mod tests {
                 peer_id: "12D3Koo".to_owned(),
                 connected: true,
                 source: PeerSource::Mdns,
+                path: Some(PeerPath::Direct),
             },
         });
         let json = serde_json::to_string(&discovered).expect("serialize");
@@ -348,8 +382,8 @@ mod tests {
 
     #[test]
     fn envelope_carries_protocol_version() {
-        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(PROTOCOL_VERSION, 4);
         let env = Envelope::new(Request::Subscribe);
-        assert_eq!(env.version, 3);
+        assert_eq!(env.version, 4);
     }
 }

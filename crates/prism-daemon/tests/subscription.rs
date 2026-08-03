@@ -67,6 +67,7 @@ fn a_peer() -> PeerInfo {
         peer_id: "12D3KooWTest".to_owned(),
         connected: true,
         source: prism_proto::PeerSource::Mdns,
+        path: None,
     }
 }
 
