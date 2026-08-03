@@ -143,59 +143,16 @@ pub async fn ensure_up(state: &AppState, seed: Seed32) -> Result<(), String> {
     // Watch the peer list and push discover/lost events to subscribers.
     let peer_watch = crate::peer_watch::spawn_peer_watch(net.clone(), state.events.clone());
 
-    // Publish our signed DHT locator (M4), if the DHT is enabled. Sealed once
-    // here with a transient identity (the key is not held by the publish task),
-    // over only our globally-routable addresses.
-    let locator_publish = if state.net_config.enable_dht {
-        Some(start_locator_publish(&net, &seed, &state.net_config).await)
-    } else {
-        None
-    };
-
+    // The DHT locator is published by a daemon-lifetime task started in
+    // `serve()` — it must outlive any single networking bring-up and re-seal from
+    // the current address set (see locator_publish.rs).
     info!(peer_id = net.local_peer_id(), "networking is up");
     *guard = Some(NetworkHandles {
         net,
         core,
         _peer_watch: peer_watch,
-        _locator_publish: locator_publish,
     });
     Ok(())
-}
-
-/// Seal our locator over our publishable addresses and spawn the re-publication
-/// task. The identity key is used only transiently here (to sign); the spawned
-/// task carries only the public signed bytes.
-async fn start_locator_publish(
-    net: &prism_net::NetHandle,
-    seed: &Seed32,
-    config: &prism_net::NetConfig,
-) -> tokio::task::JoinHandle<()> {
-    // Candidate addresses: explicitly-advertised externals plus bound listeners;
-    // filtered to the globally-routable set so nothing private reaches the DHT,
-    // then bounded to what a locator accepts (so sealing cannot fail).
-    let mut candidates = config.external_addrs.clone();
-    if let Ok(listeners) = net.listeners().await {
-        candidates.extend(listeners);
-    }
-    let mut addrs: Vec<String> = prism_net::public_addrs(&candidates)
-        .into_iter()
-        .filter(|a| a.len() <= prism_core::locator::MAX_ADDR_LEN)
-        .collect();
-    addrs.truncate(prism_core::locator::MAX_LOCATOR_ADDRS);
-
-    let identity = IdentityKeypair::from_seed(seed);
-    let published_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let key = prism_core::own_locator_key(&identity.public());
-    // seal_locator only fails on malformed input we control (address bounds);
-    // fall back to an identity-only (empty-address) locator on the unexpected.
-    let sealed = prism_core::seal_locator(&identity, &addrs, published_at)
-        .or_else(|_| prism_core::seal_locator(&identity, &[], published_at))
-        .unwrap_or_default();
-
-    crate::locator_publish::spawn_locator_publish(net.clone(), key, sealed)
 }
 
 /// A `Sensitive` body cannot be borrowed as bytes without exposing it; do so

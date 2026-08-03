@@ -40,6 +40,14 @@ use crate::DaemonError;
 pub async fn serve(listener: UnixListener, state: Arc<AppState>) -> Result<(), DaemonError> {
     let our_uid = rustix::process::getuid().as_raw();
 
+    // Re-publish our signed DHT locator for as long as the daemon runs. Spawned
+    // here rather than at networking bring-up because it must survive lock/unlock
+    // cycles and re-seal from the *current* address set each time — a relay
+    // circuit address only exists after a reservation is granted, well after
+    // networking starts. It no-ops while the keystore is locked or the network is
+    // down, so it is safe to start before either exists.
+    let _locator_publish = crate::locator_publish::spawn_locator_publish(Arc::clone(&state));
+
     loop {
         let (stream, _addr) = listener.accept().await?;
         match stream.peer_cred() {
