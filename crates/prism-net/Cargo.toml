@@ -33,6 +33,12 @@ libp2p = { version = "0.56", default-features = false, features = [
     "autonat",
     "dcutr",
     "relay",
+    # QUIC (UDP) alongside TCP: deferred from M2b explicitly "to the milestone
+    # that earns it with NAT traversal". UDP hole punching succeeds materially
+    # more often than TCP simultaneous-open, which is the whole point of M5.
+    # NOTE: QUIC is encrypted by TLS 1.3 (libp2p's audited implementation binding
+    # the PeerId into the certificate), not Noise — see docs/net.md.
+    "quic",
 ] }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 futures.workspace = true

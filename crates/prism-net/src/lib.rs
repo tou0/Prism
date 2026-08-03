@@ -348,6 +348,33 @@ fn build_behaviour(
     Ok(PrismBehaviour { mdns, kad, rr })
 }
 
+/// Derive a QUIC listen address from a TCP one: `/ip4/A/tcp/P` becomes
+/// `/ip4/A/udp/P/quic-v1`, keeping the interface and the port *number* (TCP and
+/// UDP ports are separate namespaces, so reusing the number is both legal and
+/// what an operator opening a firewall expects).
+///
+/// Returns `None` when the input is not a plain IP+TCP address — including when
+/// it is already a QUIC address — so the caller simply does not add a second
+/// listener. Only the address family and port are read; nothing else is assumed.
+fn quic_listen_addr(tcp: &Multiaddr) -> Option<Multiaddr> {
+    let mut ip = None;
+    let mut port = None;
+    for proto in tcp.iter() {
+        match proto {
+            Protocol::Ip4(_) | Protocol::Ip6(_) => ip = Some(proto),
+            Protocol::Tcp(p) => port = Some(p),
+            // Anything else (already QUIC, a circuit address, /dns/, …) is not
+            // a plain TCP listener: do not guess.
+            _ => return None,
+        }
+    }
+    let mut quic = Multiaddr::empty();
+    quic.push(ip?);
+    quic.push(Protocol::Udp(port?));
+    quic.push(Protocol::QuicV1);
+    Some(quic)
+}
+
 /// Parse a bootstrap multiaddr string into `(peer id, transport address)`.
 /// The entry must carry a trailing `/p2p/<peer-id>`; the returned address has
 /// that component stripped (Kademlia wants the peer id and transport address
@@ -391,14 +418,30 @@ pub fn spawn(
             yamux::Config::default,
         )
         .map_err(|e| NetError::Build(e.to_string()))?
+        // QUIC (M5): UDP hole punching succeeds materially more often than TCP
+        // simultaneous-open, so QUIC carries the NAT-traversal case. QUIC is
+        // TLS 1.3-encrypted (libp2p's audited implementation, PeerId bound into
+        // the certificate) rather than Noise — see docs/net.md.
+        .with_quic()
         .with_behaviour(|kp| build_behaviour(kp, &config))
         .map_err(|e| NetError::Build(e.to_string()))?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
+    // TCP is required: a failure here is fatal.
     swarm
-        .listen_on(listen_addr)
+        .listen_on(listen_addr.clone())
         .map_err(|e| NetError::Build(e.to_string()))?;
+
+    // QUIC is best-effort: derived from the TCP listen address (same interface,
+    // same port number — TCP/4001 pairs with UDP/4001, which is what an operator
+    // expects to open). A node whose UDP is blocked must still work over TCP, so
+    // a QUIC bind failure is logged and tolerated, never fatal.
+    if let Some(quic_addr) = quic_listen_addr(&listen_addr) {
+        if let Err(e) = swarm.listen_on(quic_addr) {
+            warn!(error = %e, "QUIC listener unavailable; continuing with TCP only");
+        }
+    }
 
     // Advertise configured globally-routable addresses (a public/VPS node knows
     // its own; a NAT-bound node advertises none in M4).
@@ -515,6 +558,34 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quic_listen_addr_mirrors_the_tcp_listener() {
+        let cases = [
+            (
+                "/ip4/0.0.0.0/tcp/4001",
+                Some("/ip4/0.0.0.0/udp/4001/quic-v1"),
+            ),
+            ("/ip4/0.0.0.0/tcp/0", Some("/ip4/0.0.0.0/udp/0/quic-v1")),
+            (
+                "/ip4/203.0.113.9/tcp/4001",
+                Some("/ip4/203.0.113.9/udp/4001/quic-v1"),
+            ),
+            ("/ip6/::/tcp/4001", Some("/ip6/::/udp/4001/quic-v1")),
+            // Already QUIC, or not a plain TCP listener: do not guess.
+            ("/ip4/0.0.0.0/udp/4001/quic-v1", None),
+            ("/ip4/0.0.0.0/tcp/4001/p2p-circuit", None),
+            ("/ip4/0.0.0.0/tcp/4001/ws", None),
+        ];
+        for (input, expected) in cases {
+            let parsed: Multiaddr = match input.parse() {
+                Ok(a) => a,
+                Err(_) => panic!("test input must parse: {input}"),
+            };
+            let got = quic_listen_addr(&parsed).map(|a| a.to_string());
+            assert_eq!(got.as_deref(), expected, "for {input}");
+        }
+    }
 
     #[test]
     fn public_addrs_keeps_only_globally_routable() {
