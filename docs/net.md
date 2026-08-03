@@ -359,7 +359,7 @@ Decrypted messages live only in the core thread's RAM inbox for the process's
 lifetime; `inbox` drains it. Message history (on-disk) is a later milestone.
 The ratchet store (`sessions.prs`) persists ratchet state only.
 
-## Known limitations — connection robustness (deferred to M4/M5)
+## Known limitations — connection robustness (M5 ships the minimum)
 
 M2b's networking is **synchronous and best-effort**: it delivers over whatever
 connection currently exists, with no reconnection machinery. Several consequences
@@ -392,6 +392,19 @@ they are *documented*, not fixed, in M3:
   work and belongs to M4/M5 — it is **not** a display bug and is intentionally
   **not** patched in M3 (a partial fix would mask the symptom without addressing
   the cause). See the roadmap note at M4/M5.
+
+**A first send to a new peer may need a retry (M5).** M5 deliberately ships only
+the *minimum* connection robustness — relay reservation keep-alive and relay
+re-dial — and **no automatic send-retry**. The first circuit dial to a peer can
+race the sender's own connection to the relay, so an initial `send` can come back
+`not reachable` and succeed on a second attempt moments later. Both the prism-net
+and daemon relay tests carry a bounded retry for exactly this reason, and say so
+in a comment rather than hiding it.
+
+This is an honest UX limitation, not a bug: nothing is silently lost (nothing is
+queued either — store-and-forward is M6), and the next attempt establishes the
+session normally. Automatic retry/backoff on send is **deferred** with the rest of
+the general reconnection/retry work.
 
 None of this changes correctness or security — it is availability/UX robustness.
 "Nothing is queued on a failed send" remains correct (store-and-forward is M6).
