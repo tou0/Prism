@@ -9,7 +9,21 @@ does **not** promise "100% secure" or "untraceable" — it maximizes protection
 and communicates its limits honestly. See [`docs/specification.md`](docs/specification.md)
 for the full design.
 
-> **Status: milestone M4 (DHT discovery).** Nodes now find each other **off the
+> **Status: milestone M5 (NAT traversal & relays) — in progress.** Two users
+> **both behind NAT** can now talk. A node detects its own reachability
+> (AutoNAT), punches through NATs for a **direct** connection when it can
+> (DCUtR, over QUIC as well as TCP), and falls back **automatically** to a
+> **Circuit Relay v2** relay when it cannot — the user just experiences "it
+> connects", and `peers`/`status` always show which path was used. Running a
+> relay is **opt-in and capped** (`--relay`), and a relay **cannot read**
+> anything it carries. **Honest limits:** a relay does see who-talks-to-whom in
+> real time (it keeps no record); one relay is not anonymity; traffic
+> correlation remains possible; network-level anonymity needs Tor (M5b). An
+> always-on node can unlock itself from a passphrase file (`--unattended`) — a
+> documented at-rest trade-off, never the default. See
+> [`docs/net.md`](docs/net.md).
+>
+> **Previously: milestone M4 (DHT discovery).** Nodes now find each other **off the
 > LAN** through a libp2p **Kademlia DHT**, coexisting with mDNS. A node publishes
 > a **signed locator record** (its identity key + globally-routable addresses,
 > Ed25519-signed) keyed by fingerprint; another node resolves it by fingerprint

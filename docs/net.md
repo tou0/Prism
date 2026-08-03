@@ -1,4 +1,4 @@
-# Prism networking — M2b (local) + M4 (DHT discovery)
+# Prism networking — M2b (local) + M4 (DHT discovery) + M5 (NAT & relays)
 
 Two discovery layers coexist:
 
@@ -10,9 +10,12 @@ Two discovery layers coexist:
   resolves it by fingerprint, from anywhere on the internet. See
   [DHT discovery (M4)](#dht-discovery-m4) below.
 
-Still later milestones: NAT traversal / relays (M5), Tor (M5b), offline
-store-and-forward (M6). **After M4 two nodes may _discover_ each other yet not
-always _connect_** (no NAT traversal yet) — expected, not a bug.
+- **M5 (NAT & relays)** — two nodes **both behind NAT** can now talk: AutoNAT
+  tells a node whether it is reachable, DCUtR punches through NATs for a direct
+  connection when it can, and Circuit Relay v2 carries the traffic when it
+  cannot. See [NAT traversal and relays (M5)](#nat-traversal-and-relays-m5).
+
+Still later milestones: Tor (M5b), offline store-and-forward (M6).
 
 Crates: `prism-net` (libp2p transport, this document), `prism-daemon` (wiring),
 `prism-proto` (IPC messages), `prism-cli` (`send` / `inbox` / `peers` /
@@ -33,8 +36,8 @@ The daemon runs the minimum number of owners, communicating over channels:
 ```
 
 1. **Swarm task** (async) — the sole owner of the libp2p `Swarm`: mDNS
-   discovery, the Kademlia DHT (M4), the request/response protocol, and the
-   peer table. It never blocks its poll loop (DHT record validation is a fast
+   discovery, the Kademlia DHT (M4), NAT traversal (identify / AutoNAT / DCUtR /
+   Circuit Relay v2, M5), the request/response protocol, and the peer table. It never blocks its poll loop (DHT record validation is a fast
    pure signature check, so it runs inline; see [DHT discovery](#dht-discovery-m4)).
 2. **IPC accept-loop** (async) — unchanged from M0; each connection handler
    translates a request into channel round-trips.
@@ -109,8 +112,9 @@ justified exception, and it is confined to a single function.
 
 ## Transport & wire protocol
 
-- **Transport**: TCP + **Noise** + Yamux. (No QUIC in M2b — QUIC uses TLS, not
-  Noise, and earns its place with NAT traversal in a later milestone.)
+- **Transport**: TCP + **Noise** + Yamux, and since M5 also **QUIC** (TLS 1.3;
+  see [NAT traversal and relays](#nat-traversal-and-relays-m5) for why QUIC is
+  here and what it means that two channel-encryption schemes coexist).
 - **Discovery**: `libp2p-mdns` on the local network. A manual
   `add_peer_address` hint also exists (used by tests and a future
   designated-peer feature); it adds no automatic discovery mechanism.
@@ -210,6 +214,108 @@ hygiene yet routes only to its peer — and asserts that two daemons (mDNS off,
 one bootstrapping to the other) discover each other purely through the DHT and
 exchange messages both directions. It is a manual harness, not a CI job: it
 needs unprivileged user namespaces, which many CI kernels disable.
+
+## NAT traversal and relays (M5)
+
+M4 made two nodes *discoverable* across the internet; it did not make them
+*connectable*. M5 closes that: before it, a send only worked when one side had a
+public IP.
+
+**Transports.** TCP + Noise, and now **QUIC** (UDP) as well. QUIC is here
+because UDP hole punching succeeds materially more often than TCP
+simultaneous-open. Honest note: QUIC is encrypted by **TLS 1.3**, not Noise —
+libp2p's audited implementation, with the PeerId bound into the certificate. Two
+channel-encryption schemes therefore coexist; neither is homemade, and both are
+in the mandated stack (spec §6/§17). TCP is required; a QUIC bind failure is
+logged and tolerated, so a node with UDP blocked still works.
+
+**The three pieces, and how they fit.**
+
+| Piece | Role |
+|---|---|
+| **identify** | peers report the address they observe for us — the only source of external-address *candidates*. Load-bearing, not cosmetic. |
+| **AutoNAT v2** | asks a server to dial a candidate back. Confirmation promotes it to a real external address; repeated failure means we are NAT-bound. |
+| **Circuit Relay v2** | a relay forwards opaque encrypted bytes for a NAT-bound peer. |
+| **DCUtR** | once a relayed connection exists, both ends punch through their NATs and continue **directly**, dropping the relay. |
+
+An observed address is never trusted on a peer's word: it is believed only after
+an actual inbound dial confirms it. Reachability is reported three-valued —
+`Public`, `Private`, or **`Unknown`** before any probe completes. "Not yet known"
+is never dressed up as reachable.
+
+**The fallback, and why it is automatic.** Direct addresses are always tried
+first: a direct connection is faster and involves no third party. Only when a
+peer has no direct address do we build `<relay>/p2p-circuit/p2p/<target>` for
+each configured relay. The user chooses nothing and does nothing — they should
+simply experience "it connects" — but the path is always *shown* (`peers` prints
+`direct` or `relayed`, `status` prints reachability). With neither a direct
+address nor a relay, the honest answer is still "not reachable".
+
+**Being reachable inbound** is the mirror half: a NAT-bound node holds a
+reservation on a relay and publishes that **circuit address in its DHT locator**,
+so peers can find a path to it. This is why the locator is re-sealed
+periodically rather than once at startup — a reservation is granted after
+networking comes up, and a record sealed before it would advertise no route.
+Circuit addresses need no locator format change: the IP they carry is the
+*relay's* (so IP hygiene keeps them) and the canonical
+`<relay>/p2p/<id>/p2p-circuit` form fits the per-address length cap.
+
+**Running a relay** is opt-in (`--relay`) and **capped** (spec §6: relaying must
+be voluntary and capped, so a node is never drained against its owner's will):
+maximum simultaneous reservations and circuits, per-peer limits, circuit duration
+and byte ceilings, all operator-configurable, plus libp2p's per-peer and per-IP
+rate limiters. **A relay must also advertise its own external address** — the
+reservation it grants carries the addresses clients should use, and a relay with
+none makes clients reject the reservation outright. prism-net warns at startup in
+that case.
+
+**Unattended unlock.** An always-on relay or bootstrap node can unlock itself at
+startup from a passphrase file (`--unattended --passphrase-file`), because a
+locked node publishes nothing and serves nothing. This **weakens at-rest
+protection on that machine**: the passphrase now lives beside the keystore, so
+anyone who can read it — root, a backup, a snapshot, a stolen disk — owns that
+identity, and Argon2id no longer buys anything against them. It is opt-in twice,
+never the default, requires a `0600` file owned by the daemon's user (a
+group/world-readable file is refused outright), and suits a dedicated node
+holding no personal conversations — not a personal one.
+
+### What a relay can and cannot see — and what still leaks
+
+Read this as the limit of what M5 provides. Prism does not claim more.
+
+- **A relay cannot read your messages.** Content is Olm-encrypted end to end and
+  additionally encrypted on each hop; the relay terminates no session and parses
+  no payload. It moves opaque bytes.
+- **A relay does see who talks to whom, in real time.** That is inherent to a
+  standard Circuit Relay v2: it must know both ends to forward. Prism's relays
+  are **non-retaining** — the code keeps only aggregate counters (current
+  reservations, current circuits, a lifetime total), never a pair, never a
+  per-peer entry, nothing written to disk, and nothing logged at info level that
+  names both ends.
+- **Non-retention is not blindness.** Prism relays are *not* SimpleX-style blind
+  relays that structurally cannot know the relationship. Non-retention defends
+  against **after-the-fact seizure** of a relay, not against a relay operator
+  watching live traffic. A blind-relay design is a dedicated later effort.
+- **A single relay is not anonymity.** Real origin-hiding needs several hops
+  where no single hop knows both ends. M5 has one hop.
+- **"Direct" means the peer learns your IP.** Successful hole punching is, by
+  definition, a direct connection between two addresses. If you can see their
+  IP, they can see yours.
+- **Traffic-correlation attacks remain possible.** An observer who can watch both
+  ends can infer who is communicating from timing and volume alone, with no
+  access to content and even when traffic is relayed. M5 adds no padding, no
+  mixing, and no cover traffic.
+- **Network-level anonymity requires Tor** (M5b, via Arti). Strong correlation
+  resistance additionally requires cover traffic — bandwidth-expensive, opt-in,
+  and a long-term item, not something M5 provides.
+- **A hostile relay can drop or delay** your traffic (an availability attack). It
+  still cannot read it.
+
+What M5 *does* give you: content confidentiality and integrity, no central
+server, no retention on relays, relays you choose and can pin, and a visible path
+so you always know whether a third party is carrying your traffic. In spec §13's
+words: your messages are strongly encrypted and unreadable, but your network
+activity — presence, IP address, correspondents, timing — is **not** anonymized.
 
 ## No plaintext on disk
 
