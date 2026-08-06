@@ -78,8 +78,39 @@ struct Args {
     no_nat_traversal: bool,
 }
 
+/// Default log filter when `RUST_LOG` is unset.
+///
+/// `info` matches the previous behaviour. The AutoNAT v2 **server** is pinned to
+/// `error` because it warns once per inbound dial-request that cannot be
+/// completed (`inbound request handle timed out`, a 10 s budget in
+/// libp2p-autonat), and a dial-back to a NAT-bound client *cannot* complete —
+/// clients re-probe every 5 s, so a public node serving NAT-bound peers logs that
+/// warning forever. The behaviour is correct (AutoNAT is concluding "Private",
+/// which is true); only the noise is a problem. Whether a node whose peers are
+/// mostly NAT-bound should run the AutoNAT server at all is a separate question,
+/// deliberately left for later.
+const DEFAULT_LOG_FILTER: &str = "info,libp2p_autonat::v2::server=error";
+
 fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_target(false).try_init().ok();
+    // Honour RUST_LOG. Without this the daemon ignored it entirely (no
+    // `EnvFilter` was installed), so an operator could not raise the log level to
+    // diagnose anything — `RUST_LOG=debug` produced no extra output at all.
+    //
+    // When the operator has asked for detail, show event targets too: knowing a
+    // line came from `libp2p_relay` rather than `prism_net` is most of its value
+    // when debugging. The default output stays target-free, as before.
+    let (filter, show_target) = match tracing_subscriber::EnvFilter::try_from_default_env() {
+        Ok(filter) => (filter, true),
+        Err(_) => (
+            tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER),
+            false,
+        ),
+    };
+    tracing_subscriber::fmt()
+        .with_target(show_target)
+        .with_env_filter(filter)
+        .try_init()
+        .ok();
 
     let args = Args::parse();
 
