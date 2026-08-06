@@ -74,6 +74,26 @@ pub fn reachability_label(r: prism_proto::ReachabilityInfo) -> &'static str {
     }
 }
 
+/// No relay is configured, so this node cannot be reached inbound while behind a
+/// NAT. Phrased as the actionable fact, since it is a common misconfiguration:
+/// `--relay-addr` is **required** to route through a relay.
+pub const NO_RELAYS: &str =
+    "  relays:    none configured (a NAT-bound node needs --relay-addr to be reachable)";
+
+/// Whether we hold a reservation on a relay, and if not, why not yet.
+pub fn reservation_state_label(state: &prism_proto::ReservationStateInfo) -> String {
+    match state {
+        prism_proto::ReservationStateInfo::Active => {
+            "reserved — reachable via this relay".to_owned()
+        }
+        prism_proto::ReservationStateInfo::Pending => "requesting…".to_owned(),
+        prism_proto::ReservationStateInfo::Retrying {
+            attempts,
+            retry_in_secs,
+        } => format!("NOT reserved after {attempts} attempt(s); retrying in {retry_in_secs}s"),
+    }
+}
+
 /// Short label for how a peer was discovered.
 pub fn peer_source_label(source: prism_proto::PeerSource) -> &'static str {
     match source {

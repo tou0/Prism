@@ -336,6 +336,7 @@ pub async fn handle_status(state: &AppState) -> Response {
         Vec::new()
     };
     let nat = handles.net.nat_status().await.ok();
+    let relay = handles.net.relay_status().await.ok();
     Response::Status {
         handle,
         peer_id: handles.net.local_peer_id().to_owned(),
@@ -351,6 +352,35 @@ pub async fn handle_status(state: &AppState) -> Response {
         },
         relaying: state.net_config.relay_server.is_some(),
         relays: state.net_config.relays.clone(),
+        relay_reservations: relay
+            .as_ref()
+            .map(|r| {
+                r.ours
+                    .iter()
+                    .map(|info| prism_proto::RelayReservationInfo {
+                        relay: info.relay.clone(),
+                        state: match &info.state {
+                            prism_net::ReservationState::Active => {
+                                prism_proto::ReservationStateInfo::Active
+                            }
+                            prism_net::ReservationState::Pending => {
+                                prism_proto::ReservationStateInfo::Pending
+                            }
+                            prism_net::ReservationState::Retrying {
+                                attempts,
+                                retry_in_secs,
+                            } => prism_proto::ReservationStateInfo::Retrying {
+                                attempts: *attempts,
+                                retry_in_secs: *retry_in_secs,
+                            },
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        relay_reservations_held: relay.as_ref().map(|r| r.reservations_held).unwrap_or(0),
+        relay_circuits_open: relay.as_ref().map(|r| r.circuits_open).unwrap_or(0),
+        relay_circuits_total: relay.as_ref().map(|r| r.circuits_total).unwrap_or(0),
     }
 }
 

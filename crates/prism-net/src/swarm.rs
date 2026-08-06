@@ -29,7 +29,7 @@ use crate::identity::{peer_id_from_key, peer_key_from_id, PeerKey};
 use crate::protocol::{WireRequest, WireResponse, WIRE_VERSION};
 use crate::{
     ConnectionPath, DhtStatus, DiscoverySource, InboundSink, NatStatus, NetError, PeerRecord,
-    Reachability,
+    Reachability, RelayStatus, ReservationInfo, ReservationState,
 };
 
 /// Reply channel for a `resolve_locator` query: the opaque record bytes, or
@@ -154,6 +154,8 @@ pub(crate) enum Command {
     DhtStatus { reply: oneshot::Sender<DhtStatus> },
     /// Snapshot our own reachability as AutoNAT sees it (M5).
     NatStatus { reply: oneshot::Sender<NatStatus> },
+    /// Snapshot relay activity and our own reservation states (M5).
+    RelayStatus { reply: oneshot::Sender<RelayStatus> },
     /// Advertise a globally-routable address as ours (confirms it to the swarm,
     /// which upgrades Kademlia to server mode so we serve/store records).
     AddExternalAddress { addr: String },
@@ -279,6 +281,38 @@ impl SwarmTask {
     /// [`Reachability::Unknown`] rather than an optimistic guess.
     fn reachability(&self) -> Reachability {
         aggregate_reachability(&self.autonat_results)
+    }
+
+    /// Snapshot relay activity and our reservation states for `status`.
+    fn relay_status(&self) -> RelayStatus {
+        let now = Instant::now();
+        let ours = self
+            .reservations
+            .iter()
+            .map(|entry| ReservationInfo {
+                relay: entry.addr.to_string(),
+                state: if entry.active {
+                    ReservationState::Active
+                } else if entry.listener.is_some() {
+                    ReservationState::Pending
+                } else {
+                    ReservationState::Retrying {
+                        attempts: entry.attempts,
+                        retry_in_secs: entry
+                            .next_attempt
+                            .map(|due| due.saturating_duration_since(now).as_secs())
+                            .unwrap_or(0),
+                    }
+                },
+            })
+            .collect();
+        RelayStatus {
+            serving: self.swarm.behaviour().relay_server.is_enabled(),
+            reservations_held: self.relay_reservations,
+            circuits_open: self.relay_circuits,
+            circuits_total: self.relay_circuits_total,
+            ours,
+        }
     }
 
     /// Snapshot our reachability for `status`.
@@ -517,6 +551,9 @@ impl SwarmTask {
             }
             Command::NatStatus { reply } => {
                 let _ = reply.send(self.nat_status());
+            }
+            Command::RelayStatus { reply } => {
+                let _ = reply.send(self.relay_status());
             }
             Command::AddExternalAddress { addr } => match addr.parse::<Multiaddr>() {
                 Ok(addr) => self.swarm.add_external_address(addr),

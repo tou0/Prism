@@ -19,7 +19,7 @@ mod sensitive;
 pub use frame::{read_message, read_message_opt, write_message, MAX_FRAME_LEN};
 pub use message::{
     Envelope, Event, InboxItem, PeerInfo, PeerPath, PeerSource, ReachabilityInfo, RecoveryMode,
-    Request, Response, PROTOCOL_VERSION,
+    RelayReservationInfo, Request, ReservationStateInfo, Response, PROTOCOL_VERSION,
 };
 pub use sensitive::Sensitive;
 

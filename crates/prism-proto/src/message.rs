@@ -17,6 +17,10 @@ use crate::sensitive::Sensitive;
 /// client↔daemon protocol. The daemon rejects mismatched versions; a richer
 /// compatibility window is deferred with the rest of version negotiation.
 ///
+/// Bumped to `5` while reopening M5: `relay_reservations` on
+/// [`Response::Status`], so an operator can see whether a relay reservation was
+/// ever actually granted — the question a real-network failure could not answer.
+///
 /// Bumped to `4` for M5 (NAT traversal + relays): [`PeerInfo::path`] (direct vs
 /// relayed) and the reachability/relay fields on [`Response::Status`].
 ///
@@ -24,7 +28,7 @@ use crate::sensitive::Sensitive;
 /// [`Response::Resolved`], the DHT fields on [`Response::Status`], and the
 /// discovery [`PeerSource`] on [`PeerInfo`]. Client and daemon ship from the
 /// same build, so the strict version match is not a compatibility concern here.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// The user's choice of recovery mode at identity creation (spec §4.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +198,16 @@ pub enum Response {
         /// Relays we may route through (public infrastructure metadata, not
         /// secret — the user is shown who could be carrying their traffic).
         relays: Vec<String>,
+        /// Our reservation on each configured relay: the answer to "am I
+        /// reachable inbound through a relay, and if not, why not yet".
+        relay_reservations: Vec<RelayReservationInfo>,
+        /// Reservations other peers hold on us, if we relay (aggregate only —
+        /// a relay keeps no per-peer record).
+        relay_reservations_held: usize,
+        /// Circuits currently open through us (aggregate).
+        relay_circuits_open: usize,
+        /// Circuits carried since start (aggregate, lifetime).
+        relay_circuits_total: u64,
     },
     /// The request could not be served; carries a human-readable reason.
     Error {
@@ -254,6 +268,32 @@ pub enum PeerPath {
     Direct,
     /// Carried through a relay (which cannot read the traffic).
     Relayed,
+}
+
+/// The state of our reservation on one relay (M5). Mirror of prism-net's
+/// `ReservationState`, so the IPC layer keeps no networking dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReservationStateInfo {
+    /// Granted: we are reachable inbound through this relay.
+    Active,
+    /// Requested, awaiting the relay's answer.
+    Pending,
+    /// The last attempt failed; retrying shortly.
+    Retrying {
+        /// Consecutive failed attempts.
+        attempts: u32,
+        /// Seconds until the next attempt.
+        retry_in_secs: u64,
+    },
+}
+
+/// Our reservation on a specific relay (M5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayReservationInfo {
+    /// The relay's address (public infrastructure metadata, not secret).
+    pub relay: String,
+    /// Whether we hold a reservation there, and if not, why not yet.
+    pub state: ReservationStateInfo,
 }
 
 /// Our own reachability from outside, as AutoNAT sees it (M5).
@@ -382,8 +422,8 @@ mod tests {
 
     #[test]
     fn envelope_carries_protocol_version() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
         let env = Envelope::new(Request::Subscribe);
-        assert_eq!(env.version, 4);
+        assert_eq!(env.version, 5);
     }
 }

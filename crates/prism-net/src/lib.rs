@@ -195,11 +195,17 @@ pub struct NetConfig {
     pub enable_nat_traversal: bool,
     /// Relays this node may route through (M5), each `…/p2p/<peer-id>`.
     ///
-    /// Selection is **automatic by default** in the sense that the node uses a
-    /// configured relay whenever it needs one, with no user action; listing
-    /// entries here is the **manual override** that pins which relays are
-    /// acceptable. Empty means no relay is available, so an unreachable peer
-    /// stays unreachable (honest: discovery is not reachability).
+    /// **Required to route through a relay.** There is no relay discovery: a node
+    /// only uses relays listed here, and a bootstrap node being *able* to relay
+    /// does not make it one for us. Empty therefore means no relayed path exists
+    /// in either direction — we cannot reach a NAT-bound peer, and if we are
+    /// NAT-bound we hold no reservation and are unreachable inbound.
+    ///
+    /// What *is* automatic is the **use** of a configured relay: the direct→relay
+    /// fallback needs no user action once an entry exists. An earlier version of
+    /// this comment called selection "automatic by default", which wrongly implied
+    /// relays are discovered; they are not (auto-discovery is deliberately out of
+    /// scope for M5).
     pub relays: Vec<String>,
     /// Act as a **relay** for NAT-bound peers (M5). `None` (the default) means
     /// this node relays nothing; `Some(limits)` opts in with operator-set caps.
@@ -274,6 +280,50 @@ pub enum Reachability {
     Public,
     /// Every address probed so far failed — we are behind a NAT or firewall.
     Private,
+}
+
+/// The state of our reservation on one relay (M5). Public metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReservationState {
+    /// A reservation is granted: we are reachable inbound through this relay.
+    Active,
+    /// Requested, awaiting the relay's answer.
+    Pending,
+    /// The last attempt failed; retrying after `retry_in_secs`.
+    Retrying {
+        /// Consecutive failed attempts so far.
+        attempts: u32,
+        /// Seconds until the next attempt.
+        retry_in_secs: u64,
+    },
+}
+
+/// Our reservation on a specific relay, for `status`.
+#[derive(Debug, Clone)]
+pub struct ReservationInfo {
+    /// The relay's address (public infrastructure metadata).
+    pub relay: String,
+    /// Whether we hold a reservation there, and if not, why not yet.
+    pub state: ReservationState,
+}
+
+/// A snapshot of relay activity, for `status` (M5).
+///
+/// Exists because the field test could not answer the one question that mattered
+/// — "did the relay ever accept a reservation?" — from either end. The counters
+/// were maintained internally but exposed nowhere.
+#[derive(Debug, Clone)]
+pub struct RelayStatus {
+    /// Whether this node relays for others.
+    pub serving: bool,
+    /// Reservations other peers currently hold on us (aggregate; no identities).
+    pub reservations_held: usize,
+    /// Circuits currently open through us (aggregate).
+    pub circuits_open: usize,
+    /// Circuits carried since start (aggregate, lifetime).
+    pub circuits_total: u64,
+    /// Our own reservations on the relays we are configured to use.
+    pub ours: Vec<ReservationInfo>,
 }
 
 /// A snapshot of our own reachability, for `status`.
@@ -397,6 +447,13 @@ impl NetHandle {
     }
 
     /// Snapshot the DHT's local state (for `status`).
+    /// Snapshot relay activity and our own reservations (M5). Public metadata.
+    pub async fn relay_status(&self) -> Result<RelayStatus, NetError> {
+        let (reply, rx) = oneshot::channel();
+        self.send(Command::RelayStatus { reply }).await?;
+        rx.await.map_err(|_| NetError::Offline)
+    }
+
     /// Snapshot our own reachability as AutoNAT sees it (M5). Public metadata.
     pub async fn nat_status(&self) -> Result<NatStatus, NetError> {
         let (reply, rx) = oneshot::channel();

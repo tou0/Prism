@@ -216,6 +216,10 @@ pub async fn status(socket_path: &Path) -> Result<()> {
             reachability,
             relaying,
             relays,
+            relay_reservations,
+            relay_reservations_held,
+            relay_circuits_open,
+            relay_circuits_total,
         } => {
             println!("  handle:    {handle}");
             println!("  peer id:   {peer_id}");
@@ -244,12 +248,30 @@ pub async fn status(socket_path: &Path) -> Result<()> {
             }
             println!("  NAT:       {}", text::reachability_label(reachability));
             if relaying {
-                println!("  relay:     serving relayed circuits for other peers");
+                println!(
+                    "  relay:     serving ({relay_reservations_held} reservations held, \
+                     {relay_circuits_open} circuits open, {relay_circuits_total} carried)"
+                );
             }
-            if !relays.is_empty() {
+            if relays.is_empty() {
+                if !relaying {
+                    println!("{}", text::NO_RELAYS);
+                }
+            } else {
                 println!("  relays:");
-                for relay in relays {
-                    println!("    {relay}");
+                for info in &relay_reservations {
+                    println!(
+                        "    {}  [{}]",
+                        info.relay,
+                        text::reservation_state_label(&info.state)
+                    );
+                }
+                // A configured relay with no reservation entry would be a bug;
+                // list any such address rather than hide it.
+                for relay in &relays {
+                    if !relay_reservations.iter().any(|i| &i.relay == relay) {
+                        println!("    {relay}  [not tracked]");
+                    }
                 }
             }
             Ok(())
