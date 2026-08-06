@@ -9,8 +9,10 @@
 //! invariant). Outbound commands arrive over a channel from the daemon.
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration as StdDuration, Instant};
 
 use futures::stream::{FuturesUnordered, StreamExt};
+use libp2p::core::transport::ListenerId;
 use libp2p::kad::store::RecordStore;
 use libp2p::kad::{self, GetRecordOk, QueryId, QueryResult, Quorum, Record, RecordKey};
 use libp2p::multiaddr::Protocol;
@@ -50,6 +52,59 @@ fn aggregate_reachability(results: &HashMap<Multiaddr, bool>) -> Reachability {
         Reachability::Unknown
     } else {
         Reachability::Private
+    }
+}
+
+/// Backoff schedule for re-requesting a relay reservation: 2, 4, 8, 16, 32 s,
+/// then capped at 60 s. Bounded so a permanently-refusing relay is retried
+/// forever but cheaply — a client with no reservation is unreachable inbound, so
+/// giving up entirely is never the right answer.
+const MAX_RESERVATION_BACKOFF_SECS: u64 = 60;
+
+fn reservation_backoff(attempts: u32) -> StdDuration {
+    let secs = 1u64
+        .checked_shl(attempts.min(6))
+        .unwrap_or(MAX_RESERVATION_BACKOFF_SECS)
+        .min(MAX_RESERVATION_BACKOFF_SECS);
+    StdDuration::from_secs(secs.max(2))
+}
+
+/// Our reservation on one configured relay (M5).
+///
+/// Reservations were originally requested **once** at startup, which meant any
+/// first-attempt failure — a relay not yet dialable, a transient error, a refusal
+/// — left the node permanently unreachable inbound for the life of the process.
+/// A real-network field test hit exactly that; loopback never did, because there
+/// the first attempt always succeeds instantly. Hence the explicit state machine.
+struct RelayReservation {
+    /// The relay's address, including its trailing `/p2p/<peer-id>`.
+    addr: Multiaddr,
+    /// The listener currently representing this reservation, if one exists.
+    listener: Option<ListenerId>,
+    /// True once a `/p2p-circuit` address has actually appeared for `listener`
+    /// — i.e. the relay granted the reservation. A listener alone is not enough.
+    active: bool,
+    /// Consecutive failures, driving the backoff.
+    attempts: u32,
+    /// When the next attempt is due. `None` means "due now".
+    next_attempt: Option<Instant>,
+}
+
+impl RelayReservation {
+    fn new(addr: Multiaddr) -> Self {
+        Self {
+            addr,
+            listener: None,
+            active: false,
+            attempts: 0,
+            next_attempt: None,
+        }
+    }
+
+    /// Whether an attempt should be made now (no live listener and the backoff
+    /// has elapsed).
+    fn is_due(&self, now: Instant) -> bool {
+        self.listener.is_none() && self.next_attempt.is_none_or(|due| due <= now)
     }
 }
 
@@ -158,10 +213,10 @@ pub(crate) struct SwarmTask {
     dht_enabled: bool,
     /// Bootstrap peers to add and dial on startup (peer id + transport addr).
     bootstrap: Vec<(PeerId, Multiaddr)>,
-    /// Relay addresses we may route through (M5), each ending in `/p2p/<id>`.
-    /// Used both to request reservations (so peers can reach us) and to build
-    /// circuit addresses (so we can reach them).
-    relays: Vec<Multiaddr>,
+    /// Our reservations on the configured relays (M5). Also the source of the
+    /// circuit addresses used to *reach* peers, so it is kept even when a
+    /// reservation is not (yet) active.
+    reservations: Vec<RelayReservation>,
     /// DHT `get_record` queries awaiting a result.
     pending_get: HashMap<QueryId, ResolveReply>,
     /// DHT `put_record` queries awaiting a result.
@@ -192,6 +247,7 @@ impl SwarmTask {
         bootstrap: Vec<(PeerId, Multiaddr)>,
         relays: Vec<Multiaddr>,
     ) -> Self {
+        let reservations = relays.into_iter().map(RelayReservation::new).collect();
         Self {
             swarm,
             sink,
@@ -204,7 +260,7 @@ impl SwarmTask {
             listen_addrs: Vec::new(),
             dht_enabled,
             bootstrap,
-            relays,
+            reservations,
             pending_get: HashMap::new(),
             pending_put: HashMap::new(),
             dht_peers: HashSet::new(),
@@ -240,32 +296,103 @@ impl SwarmTask {
         }
     }
 
-    /// Request a reservation on each configured relay (M5), so NAT-bound peers
-    /// can be reached through it. Listening on `<relay>/p2p-circuit` is what
-    /// makes libp2p connect to the relay and ask; the relay may refuse (its caps),
-    /// which is not fatal — we simply have no relayed path via that one.
+    /// Attempt any relay reservation that is due (M5).
+    ///
+    /// Called at startup and then on every retry tick. Listening on
+    /// `<relay>/p2p-circuit` is what makes libp2p connect to the relay and ask
+    /// for a reservation; the relay may refuse (its caps), the dial may not be
+    /// possible yet, or the request may fail — none of which is fatal, and all of
+    /// which are retried with backoff. Being unreachable inbound is not a state
+    /// to accept silently.
     ///
     /// Reservations are requested whenever relays are configured, without waiting
     /// for AutoNAT: waiting would leave a NAT-bound node unreachable for the
     /// length of a probe, and a publicly-reachable node holding an unused
-    /// reservation costs only that relay slot. Refining this to skip reservations
-    /// once AutoNAT confirms us `Public` is a deliberate later improvement.
-    fn start_relay_reservations(&mut self) {
-        for relay in self.relays.clone() {
-            let circuit = relay.clone().with(Protocol::P2pCircuit);
+    /// reservation costs only that relay slot.
+    fn poll_relay_reservations(&mut self) {
+        let now = Instant::now();
+        for index in 0..self.reservations.len() {
+            if !self.reservations[index].is_due(now) {
+                continue;
+            }
+            let addr = self.reservations[index].addr.clone();
+            let circuit = addr.clone().with(Protocol::P2pCircuit);
             match self.swarm.listen_on(circuit) {
-                Ok(_) => debug!(%relay, "requesting a relay reservation"),
-                Err(e) => warn!(error = %e, "could not request a relay reservation"),
+                Ok(listener) => {
+                    debug!(relay = %addr, ?listener, "requesting a relay reservation");
+                    let entry = &mut self.reservations[index];
+                    entry.listener = Some(listener);
+                    entry.next_attempt = None;
+                }
+                Err(e) => {
+                    let entry = &mut self.reservations[index];
+                    entry.attempts = entry.attempts.saturating_add(1);
+                    let backoff = reservation_backoff(entry.attempts);
+                    entry.next_attempt = Some(now + backoff);
+                    warn!(
+                        relay = %addr, error = %e, attempts = entry.attempts,
+                        retry_in_secs = backoff.as_secs(),
+                        "could not request a relay reservation; will retry"
+                    );
+                }
             }
         }
+    }
+
+    /// A reservation listener died (refused, expired, or the relay went away):
+    /// schedule another attempt with backoff.
+    fn on_reservation_lost(&mut self, listener: ListenerId, reason: &str) {
+        let now = Instant::now();
+        for entry in &mut self.reservations {
+            if entry.listener != Some(listener) {
+                continue;
+            }
+            entry.listener = None;
+            entry.active = false;
+            entry.attempts = entry.attempts.saturating_add(1);
+            let backoff = reservation_backoff(entry.attempts);
+            entry.next_attempt = Some(now + backoff);
+            // Warn, not debug: losing a reservation makes this node unreachable
+            // inbound, and the silence here is what made the field bug invisible.
+            warn!(
+                relay = %entry.addr, reason, attempts = entry.attempts,
+                retry_in_secs = backoff.as_secs(),
+                "relay reservation lost; will retry"
+            );
+        }
+    }
+
+    /// Circuit addresses we can use to reach a peer through our relays.
+    ///
+    /// Deliberately **not** filtered by our own reservation state: a reservation
+    /// makes *us* reachable inbound, whereas dialling out through a relay needs a
+    /// reservation held by the **target**, not by us. Requiring our own would
+    /// wrongly refuse to dial a reachable peer whenever our reservation happened
+    /// to be down.
+    fn circuit_addrs_for(&self, peer_id: PeerId) -> Vec<Multiaddr> {
+        self.reservations
+            .iter()
+            .map(|entry| {
+                entry
+                    .addr
+                    .clone()
+                    .with(Protocol::P2pCircuit)
+                    .with(Protocol::P2p(peer_id))
+            })
+            .collect()
     }
 
     /// Run until the command channel closes (daemon shutdown).
     pub(crate) async fn run(mut self) {
         self.start_bootstrap();
-        self.start_relay_reservations();
+        self.poll_relay_reservations();
+        // Retry tick: cheap (a few comparisons) and the only thing that turns a
+        // failed reservation into an eventually-successful one.
+        let mut retry = tokio::time::interval(StdDuration::from_secs(1));
+        retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                _ = retry.tick() => self.poll_relay_reservations(),
                 event = self.swarm.select_next_some() => self.on_swarm_event(event),
                 cmd = self.cmd_rx.recv() => match cmd {
                     Some(cmd) => self.on_command(cmd),
@@ -514,16 +641,7 @@ impl SwarmTask {
         // fallback — the caller does not choose, and the user needs no action.
         // Once the circuit is up, DCUtR tries to upgrade it to a direct
         // connection; if that succeeds the relay drops out of the path.
-        let circuits: Vec<Multiaddr> = self
-            .relays
-            .iter()
-            .map(|relay| {
-                relay
-                    .clone()
-                    .with(Protocol::P2pCircuit)
-                    .with(Protocol::P2p(peer_id))
-            })
-            .collect();
+        let circuits = self.circuit_addrs_for(peer_id);
         if circuits.is_empty() {
             // No direct address and no relay: honestly unreachable.
             return None;
@@ -654,8 +772,47 @@ impl SwarmTask {
                     }
                 }
             }
-            SwarmEvent::NewListenAddr { address, .. } if !self.listen_addrs.contains(&address) => {
-                self.listen_addrs.push(address);
+            SwarmEvent::NewListenAddr {
+                listener_id,
+                address,
+            } => {
+                // A circuit address appearing is the *only* proof a relay actually
+                // granted the reservation — a live listener alone is not.
+                if address.iter().any(|p| matches!(p, Protocol::P2pCircuit)) {
+                    for entry in &mut self.reservations {
+                        if entry.listener == Some(listener_id) {
+                            entry.active = true;
+                            entry.attempts = 0;
+                            entry.next_attempt = None;
+                            debug!(relay = %entry.addr, %address, "relay reservation active");
+                        }
+                    }
+                }
+                if !self.listen_addrs.contains(&address) {
+                    self.listen_addrs.push(address);
+                }
+            }
+            // A listener died. Two things must happen, neither of which used to:
+            // its addresses must stop being advertised (a dead circuit address in
+            // our published DHT locator would send peers down a route that no
+            // longer exists), and a reservation listener must be re-attempted.
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                addresses,
+                reason,
+            } => {
+                let reason = match &reason {
+                    Ok(()) => "closed".to_owned(),
+                    Err(e) => e.to_string(),
+                };
+                self.listen_addrs.retain(|a| !addresses.contains(a));
+                self.on_reservation_lost(listener_id, &reason);
+                debug!(?addresses, reason, "listener closed");
+            }
+            // One address of a still-live listener went away.
+            SwarmEvent::ExpiredListenAddr { address, .. } => {
+                self.listen_addrs.retain(|a| a != &address);
+                debug!(%address, "listen address expired");
             }
             _ => {}
         }
